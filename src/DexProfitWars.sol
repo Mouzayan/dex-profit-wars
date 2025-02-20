@@ -63,5 +63,15 @@ pragma solidity 0.8.26;
  *                 - Minimum profit requirements
  *             3. MEV Protection
  *                 - Distribution delays
+ *
+ *         This mechanism could play into memecoin launches / airdrops etc..
  */
 contract DexProfitWars {}
+
+// TODO:
+// - Add a way to track the amount of tokens in the bonus pool
+// - Add a way to track the amount of tokens in the reward pool
+// - Add a way to track the amount of tokens in the trading pool
+// - Add a way to track the amount of tokens in the bonus pool
+// - Add a way to track the amount of tokens in the reward pool
+// - Add a way to track the amount of tokens in the trading pool
