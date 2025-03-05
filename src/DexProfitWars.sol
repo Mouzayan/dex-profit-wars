@@ -94,8 +94,8 @@ contract DexProfitWars is BaseHook {
     struct TradeTracking {
         uint256 tokenInAmount;
         uint256 tokenOutAmount;
-        uint160 sqrtPriceX96Before;  // Price before swap
-        uint160 sqrtPriceX96After;   // Price after swap
+        uint160 sqrtPriceX96Before; // Price before swap
+        uint160 sqrtPriceX96After; // Price after swap
         uint256 timestamp;
     }
 
@@ -147,12 +147,9 @@ contract DexProfitWars is BaseHook {
      * @param _token0UsdOracle              The address of the Token0/USD Chainlink price feed.
      * @param _token1UsdOracle              The address of the Token1/USD Chainlink price feed.
      */
-    constructor(
-        IPoolManager _manager,
-        address _ethUsdOracle,
-        address _token0UsdOracle,
-        address _token1UsdOracle
-    ) BaseHook(_manager) {
+    constructor(IPoolManager _manager, address _ethUsdOracle, address _token0UsdOracle, address _token1UsdOracle)
+        BaseHook(_manager)
+    {
         // Initialize price feed interfaces
         ethUsdOracle = IChainlinkAggregator(_ethUsdOracle); // Creates interface to ETH/USD price feed
         token0UsdOracle = IChainlinkAggregator(_token0UsdOracle); // Creates interface to Token0/USD price feed
@@ -200,13 +197,12 @@ contract DexProfitWars is BaseHook {
      *
      * @return                              The function selector to indicate successful hook execution.
      */
-    function beforeSwap(
-        address sender,
-        PoolKey calldata key,
-        IPoolManager.SwapParams calldata params
-    ) external returns (bytes4) {
+    function beforeSwap(address sender, PoolKey calldata key, IPoolManager.SwapParams calldata params)
+        external
+        returns (bytes4)
+    {
         // Get current sqrt price from pool
-        (uint160 sqrtPriceX96, , , ) = poolManager.getSlot0(key.toId());
+        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(key.toId());
 
         // Store gas usage and price data for this swap
         swapGasTracker[sender] = SwapGasTracking({
@@ -241,25 +237,21 @@ contract DexProfitWars is BaseHook {
         uint256 gasUsed = tracking.gasStart - gasleft();
 
         // Get final price after swap completion
-        (uint160 sqrtPriceX96After, , , ) = poolManager.getSlot0(key.toId());
+        (uint160 sqrtPriceX96After,,,) = poolManager.getSlot0(key.toId());
 
         // Get current gas price for cost calculation
         uint256 gasPrice = tx.gasprice;
 
         // Calculate percentage profit/loss including gas costs
-        int256 profitPercentage = calculateSwapPnL(
-            delta,
-            tracking.sqrtPriceX96Before,
-            sqrtPriceX96After,
-            gasUsed,
-            gasPrice
-        );
+        int256 profitPercentage =
+            calculateSwapPnL(delta, tracking.sqrtPriceX96Before, sqrtPriceX96After, gasUsed, gasPrice);
 
         // Clean up gas tracking
         delete swapGasTracker[sender];
 
         // If profit exceeds 2% threshold, update trader's statistics
-        if (profitPercentage >= 2_000_000) { // 2% = 2_000_000
+        if (profitPercentage >= 2_000_000) {
+            // 2% = 2_000_000
             updateTraderStats(sender, delta, profitPercentage);
         }
 
@@ -301,11 +293,7 @@ contract DexProfitWars is BaseHook {
 
         // Calculate gas costs
         uint256 gasCostWei = gasUsed * getGasPrice();
-        uint256 gasCostInTokens = convertGasCostToTokens(
-            gasCostWei,
-            priceBeforeX96,
-            tradeValueUsd
-        );
+        uint256 gasCostInTokens = convertGasCostToTokens(gasCostWei, priceBeforeX96, tradeValueUsd);
 
         // Subtract gas costs from value out
         if (valueOut > gasCostInTokens) {
@@ -363,11 +351,11 @@ contract DexProfitWars is BaseHook {
      *      - Maximum percentage of trade value (MAX_GAS_COST_BASIS_POINTS)
      *      Returns the lower of the two limits
      */
-    function convertGasCostToTokens(
-        uint256 gasCostWei,
-        uint256 priceX96,
-        uint256 tradeValueUsd
-    ) internal view returns (uint256 tokenCost) {
+    function convertGasCostToTokens(uint256 gasCostWei, uint256 priceX96, uint256 tradeValueUsd)
+        internal
+        view
+        returns (uint256 tokenCost)
+    {
         // Get normalized prices from oracles
         // Gets validated ETH/USD price
         uint256 ethUsdPrice = getSafeOraclePrice(ethUsdOracle, ethUsdDecimals);
@@ -410,10 +398,7 @@ contract DexProfitWars is BaseHook {
      *      - Price is zero or negative
      *      - Normalized price is zero
      */
-    function getSafeOraclePrice(
-        IChainlinkAggregator oracle,
-        uint8 decimals
-    ) internal view returns (uint256) {
+    function getSafeOraclePrice(IChainlinkAggregator oracle, uint8 decimals) internal view returns (uint256) {
         // Get latest price data from oracle
         (
             uint80 roundId,
@@ -424,7 +409,8 @@ contract DexProfitWars is BaseHook {
         ) = oracle.latestRoundData(); // Gets latest price data from Chainlink oracle
 
         // Check if price is stale
-        if (block.timestamp - updatedAt > MAX_ORACLE_AGE) { // Checks if price is too old
+        if (block.timestamp - updatedAt > MAX_ORACLE_AGE) {
+            // Checks if price is too old
             revert StalePrice(updatedAt);
         }
 
@@ -441,9 +427,9 @@ contract DexProfitWars is BaseHook {
         // Normalize to 18 decimals
         uint256 normalizedPrice;
         if (decimals < 18) {
-            normalizedPrice = uint256(price) * 10**(18 - decimals); // Multiplies up if oracle uses fewer decimals
+            normalizedPrice = uint256(price) * 10 ** (18 - decimals); // Multiplies up if oracle uses fewer decimals
         } else if (decimals > 18) {
-            normalizedPrice = uint256(price) / 10**(decimals - 18); // Divides down if oracle uses more decimals
+            normalizedPrice = uint256(price) / 10 ** (decimals - 18); // Divides down if oracle uses more decimals
         } else {
             normalizedPrice = uint256(price); // Uses price as-is if already 18 decimals
         }
