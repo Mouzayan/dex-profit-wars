@@ -7,7 +7,9 @@ For example, a sponsor might offer a 5% bonus for trades with 1-3% profit margin
 This creates a fun, tournament-like atmosphere around everyday trading while providing sponsors with a way to incentivize liquidity and engagement with their token pairs.
 The mechanism could play into memecoin launches / airdrops etc..
 
-Foundry consists of:
+Sybil resistance problem:
+Since the hook is public if you get value from it there’s an incentive to spin up lots of accounts and then use them to drain the incentives pool.
+Need to think about how to id qualified users from their wallet address, and how you to filter out abuse.
 
 -   **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
 -   **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
