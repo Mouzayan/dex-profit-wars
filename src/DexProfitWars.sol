@@ -504,4 +504,3 @@ contract DexProfitWars is BaseHook {
         return normalizedPrice;
     }
 }
-
