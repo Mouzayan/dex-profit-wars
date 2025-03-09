@@ -3,7 +3,7 @@ pragma solidity 0.8.26;
 
 import {BaseHook} from "v4-periphery/src/utils/BaseHook.sol";
 import {ERC20} from "solmate/src/tokens/ERC20.sol"; // Is THIS NEEDED ????
-import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
+import {AggregatorV3Interface} from "chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
 import {CurrencyLibrary, Currency} from "v4-core/types/Currency.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
@@ -89,7 +89,6 @@ import {Hooks} from "v4-core/libraries/Hooks.sol";
  *         - Do we need circuit breakers?
  */
 contract DexProfitWars is BaseHook {
-    using PriceConverter for uint256;
     using CurrencyLibrary for Currency; // needed ???
     using BalanceDeltaLibrary for BalanceDelta; // needed ???
 
