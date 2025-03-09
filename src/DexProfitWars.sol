@@ -100,6 +100,18 @@ contract DexProfitWars is BaseHook {
         uint256 timestamp;
     }
 
+    // Struct to track trader statistics
+    struct TraderStats {
+        uint256 totalTrades;
+        uint256 profitableTrades;
+        int256 bestTradePercentage;
+        uint256 totalProfitUsd;
+        uint256 lastTradeTimestamp;
+    }
+
+    // Mapping to store trader statistics
+    mapping(address => TraderStats) public traderStats;
+
     struct SwapGasTracking {
         uint256 gasStart;
         uint160 sqrtPriceX96Before;
@@ -211,7 +223,7 @@ contract DexProfitWars is BaseHook {
             sqrtPriceX96Before: sqrtPriceX96 // Record starting price
         });
 
-        return IHooks.beforeSwap.selector; // Return function selector to indicate success
+        return (this.beforeSwap.selector); // Return function selector to indicate success
     }
 
     /**
@@ -257,7 +269,58 @@ contract DexProfitWars is BaseHook {
         }
 
         // Return function selector to indicate success
-        return IHooks.afterSwap.selector;
+        return (this.afterSwap.selector, 0);
+    }
+
+    /**
+     * @notice Updates trader statistics after a profitable trade
+     *
+     * @param trader The address of the trader
+     * @param delta The balance changes from the swap
+     * @param profitPercentage The calculated profit percentage (scaled by 1e6)
+     */
+    function updateTraderStats(address trader, BalanceDelta delta, int256 profitPercentage) internal {
+        TraderStats storage stats = traderStats[trader];
+
+        // Update trade counts
+        stats.totalTrades++;
+        stats.profitableTrades++;
+
+        // Update best trade percentage if this trade was better
+        if (profitPercentage > stats.bestTradePercentage) {
+            stats.bestTradePercentage = profitPercentage;
+        }
+
+        // Calculate and update total profit in USD
+        uint256 tradeValueUsd = calculateTradeValueUsd(delta);
+        uint256 profitUsd = (tradeValueUsd * uint256(profitPercentage)) / 1e6;
+        stats.totalProfitUsd += profitUsd;
+
+        // Update last trade timestamp
+        stats.lastTradeTimestamp = block.timestamp;
+    }
+
+    /**
+     * @notice Calculates the USD value of a trade using oracle prices
+     *
+     * @param delta The balance changes from the swap
+     *
+     * @return The USD value of the trade
+     */
+    function calculateTradeValueUsd(BalanceDelta delta) internal view returns (uint256) {
+        // Get token amounts
+        uint256 amount0 = delta.amount0 > 0 ? uint256(delta.amount0) : uint256(-delta.amount0);
+        uint256 amount1 = delta.amount1 > 0 ? uint256(delta.amount1) : uint256(-delta.amount1);
+
+        // Get token prices in USD
+        uint256 token0Price = getSafeOraclePrice(token0UsdOracle, token0UsdDecimals);
+        uint256 token1Price = getSafeOraclePrice(token1UsdOracle, token1UsdDecimals);
+
+        // Calculate total value (taking larger of the two values)
+        uint256 value0 = (amount0 * token0Price) / 1e18;
+        uint256 value1 = (amount1 * token1Price) / 1e18;
+
+        return value0 > value1 ? value0 : value1;
     }
 
     /**
@@ -422,7 +485,7 @@ contract DexProfitWars is BaseHook {
 
         // Validate price is positive
         if (price <= 0) {
-            revert InvalidPrice(price);
+            revert DPW_InvalidPrice(price);
         }
 
         // Normalize to 18 decimals
