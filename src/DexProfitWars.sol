@@ -3,6 +3,7 @@ pragma solidity 0.8.26;
 
 import {BaseHook} from "v4-periphery/src/utils/BaseHook.sol";
 import {ERC20} from "solmate/src/tokens/ERC20.sol"; // Is THIS NEEDED ????
+import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
 import {CurrencyLibrary, Currency} from "v4-core/types/Currency.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
@@ -88,8 +89,9 @@ import {Hooks} from "v4-core/libraries/Hooks.sol";
  *         - Do we need circuit breakers?
  */
 contract DexProfitWars is BaseHook {
-    using CurrencyLibrary for Currency;
-    using BalanceDeltaLibrary for BalanceDelta;
+    using PriceConverter for uint256;
+    using CurrencyLibrary for Currency; // needed ???
+    using BalanceDeltaLibrary for BalanceDelta; // needed ???
 
     struct TradeTracking {
         uint256 tokenInAmount;
@@ -123,9 +125,9 @@ contract DexProfitWars is BaseHook {
 
     // Price oracle interfaces
     // Make these private??????
-    IChainlinkAggregator public ethUsdOracle;
-    IChainlinkAggregator public token0UsdOracle;
-    IChainlinkAggregator public token1UsdOracle;
+    AggregatorV3Interface public ethUsdOracle;
+    AggregatorV3Interface public token0UsdOracle;
+    AggregatorV3Interface public token1UsdOracle;
 
     // Oracle decimals
     uint8 private immutable ethUsdDecimals;
@@ -151,9 +153,9 @@ contract DexProfitWars is BaseHook {
         BaseHook(_manager)
     {
         // Initialize price feed interfaces
-        ethUsdOracle = IChainlinkAggregator(_ethUsdOracle); // Creates interface to ETH/USD price feed
-        token0UsdOracle = IChainlinkAggregator(_token0UsdOracle); // Creates interface to Token0/USD price feed
-        token1UsdOracle = IChainlinkAggregator(_token1UsdOracle); // Creates interface to Token1/USD price feed
+        ethUsdOracle = AggregatorV3Interface(_ethUsdOracle); // Creates interface to ETH/USD price feed
+        token0UsdOracle = AggregatorV3Interface(_token0UsdOracle); // Creates interface to Token0/USD price feed
+        token1UsdOracle = AggregatorV3Interface(_token1UsdOracle); // Creates interface to Token1/USD price feed
 
         // Store decimal precision values to avoid repeated external calls
         ethUsdDecimals = ethUsdOracle.decimals(); // Stores ETH/USD feed decimal precision
@@ -398,7 +400,7 @@ contract DexProfitWars is BaseHook {
      *      - Price is zero or negative
      *      - Normalized price is zero
      */
-    function getSafeOraclePrice(IChainlinkAggregator oracle, uint8 decimals) internal view returns (uint256) {
+    function getSafeOraclePrice(AggregatorV3Interface oracle, uint8 decimals) internal view returns (uint256) {
         // Get latest price data from oracle
         (
             uint80 roundId,
