@@ -257,7 +257,7 @@ contract DexProfitWars is BaseHook {
 
         // Calculate percentage profit/loss including gas costs
         int256 profitPercentage =
-            calculateSwapPnL(delta, tracking.sqrtPriceX96Before, sqrtPriceX96After, gasUsed, gasPrice);
+            _calculateSwapPnL(delta, tracking.sqrtPriceX96Before, sqrtPriceX96After, gasUsed, gasPrice);
 
         // Clean up gas tracking
         delete swapGasTracker[sender];
@@ -265,7 +265,7 @@ contract DexProfitWars is BaseHook {
         // If profit exceeds 2% threshold, update trader's statistics
         if (profitPercentage >= 2_000_000) {
             // 2% = 2_000_000
-            updateTraderStats(sender, delta, profitPercentage);
+            _updateTraderStats(sender, delta, profitPercentage);
         }
 
         // Return function selector to indicate success
@@ -273,13 +273,13 @@ contract DexProfitWars is BaseHook {
     }
 
     /**
-     * @notice Updates trader statistics after a profitable trade
+     * @notice Updates trader statistics after a profitable trade.
      *
-     * @param trader The address of the trader
-     * @param delta The balance changes from the swap
-     * @param profitPercentage The calculated profit percentage (scaled by 1e6)
+     * @param trader                        The address of the trader.
+     * @param delta                         The balance changes from the swap.
+     * @param profitPercentage              The calculated profit percentage (scaled by 1e6).
      */
-    function updateTraderStats(address trader, BalanceDelta delta, int256 profitPercentage) internal {
+    function _updateTraderStats(address trader, BalanceDelta delta, int256 profitPercentage) internal {
         TraderStats storage stats = traderStats[trader];
 
         // Update trade counts
@@ -292,7 +292,7 @@ contract DexProfitWars is BaseHook {
         }
 
         // Calculate and update total profit in USD
-        uint256 tradeValueUsd = calculateTradeValueUsd(delta);
+        uint256 tradeValueUsd = _calculateTradeValueUsd(delta);
         uint256 profitUsd = (tradeValueUsd * uint256(profitPercentage)) / 1e6;
         stats.totalProfitUsd += profitUsd;
 
@@ -301,41 +301,18 @@ contract DexProfitWars is BaseHook {
     }
 
     /**
-     * @notice Calculates the USD value of a trade using oracle prices
+     * @notice Calculates the percentage profit/loss for a swap including gas costs.
      *
-     * @param delta The balance changes from the swap
-     *
-     * @return The USD value of the trade
-     */
-    function calculateTradeValueUsd(BalanceDelta delta) internal view returns (uint256) {
-        // Get token amounts
-        uint256 amount0 = delta.amount0 > 0 ? uint256(delta.amount0) : uint256(-delta.amount0);
-        uint256 amount1 = delta.amount1 > 0 ? uint256(delta.amount1) : uint256(-delta.amount1);
-
-        // Get token prices in USD
-        uint256 token0Price = getSafeOraclePrice(token0UsdOracle, token0UsdDecimals);
-        uint256 token1Price = getSafeOraclePrice(token1UsdOracle, token1UsdDecimals);
-
-        // Calculate total value (taking larger of the two values)
-        uint256 value0 = (amount0 * token0Price) / 1e18;
-        uint256 value1 = (amount1 * token1Price) / 1e18;
-
-        return value0 > value1 ? value0 : value1;
-    }
-
-    /**
-     * @notice Calculates the percentage profit/loss for a swap including gas costs
-     *
-     * @param delta                         The balance changes from the swap
-     * @param sqrtPriceX96Before            Price before swap in Q96 format
-     * @param sqrtPriceX96After             Price after swap in Q96 format
-     * @param gasUsed                       Amount of gas used in the swap
-     * @param gasPrice                      Current gas price in Wei
-     * @param tradeValueUsd                 USD value of the trade
+     * @param delta                         The balance changes from the swap.
+     * @param sqrtPriceX96Before            Price before swap in Q96 format.
+     * @param sqrtPriceX96After             Price after swap in Q96 format.
+     * @param gasUsed                       Amount of gas used in the swap.
+     * @param gasPrice                      Current gas price in Wei.
+     * @param tradeValueUsd                 USD value of the trade.
      *
      * @return profitPercentage             The profit/loss as a percentage (scaled by 1e6, where 1_000_000 = 100%)
      */
-    function calculateSwapPnL(
+    function _calculateSwapPnL(
         BalanceDelta delta,
         uint160 sqrtPriceX96Before,
         uint160 sqrtPriceX96After,
@@ -356,8 +333,8 @@ contract DexProfitWars is BaseHook {
         uint256 valueOut = tokenOutAmount * priceAfterX96;
 
         // Calculate gas costs
-        uint256 gasCostWei = gasUsed * getGasPrice();
-        uint256 gasCostInTokens = convertGasCostToTokens(gasCostWei, priceBeforeX96, tradeValueUsd);
+        uint256 gasCostWei = gasUsed * _getGasPrice();
+        uint256 gasCostInTokens = _convertGasCostToTokens(gasCostWei, priceBeforeX96, tradeValueUsd);
 
         // Subtract gas costs from value out
         if (valueOut > gasCostInTokens) {
@@ -377,16 +354,16 @@ contract DexProfitWars is BaseHook {
     }
 
     /**
-     * @notice Gets the current gas price with caching to optimize gas costs
-     *         Updates cache only if the current cache is older than GAS_PRICE_UPDATE_INTERVAL
+     * @notice Gets the current gas price with caching to optimize gas costs.
+     *         Updates cache only if the current cache is older than GAS_PRICE_UPDATE_INTERVAL.
      *
-     * @return                              Current gas price in Wei, either fresh or cached value
+     * @return                              Current gas price in Wei, either fresh or cached value.
      *
      * @dev Uses a caching mechanism to reduce the frequency of storage updates:
      *      - Updates cache only after GAS_PRICE_UPDATE_INTERVAL (1 hour)
      *      - Returns cached value if within update interval
      */
-    function getGasPrice() internal returns (uint256) {
+    function _getGasPrice() internal returns (uint256) {
         if (block.timestamp >= lastGasPriceUpdate + GAS_PRICE_UPDATE_INTERVAL) {
             // Update cache with current gas price
             cachedGasPrice = tx.gasprice;
@@ -402,29 +379,29 @@ contract DexProfitWars is BaseHook {
 
     // ========================================== VIEW FUNCTIONS =========================================
     /**
-     * @notice Converts gas costs in Wei to token value with thresholds
+     * @notice Converts gas costs in Wei to token value with thresholds.
      *
-     * @param gasCostWei                    Gas cost in Wei
-     * @param priceX96                      Current pool price in Q96 format
-     * @param tradeValueUsd                 USD value of the trade
+     * @param gasCostWei                    Gas cost in Wei.
+     * @param priceX96                      Current pool price in Q96 format.
+     * @param tradeValueUsd                 USD value of the trade.
      *
-     * @return tokenCost                    Gas cost converted to token value
+     * @return tokenCost                    Gas cost converted to token value.
      *
      * @dev Applies two thresholds:
      *      - Maximum USD value (MAX_GAS_COST_USD)
      *      - Maximum percentage of trade value (MAX_GAS_COST_BASIS_POINTS)
      *      Returns the lower of the two limits
      */
-    function convertGasCostToTokens(uint256 gasCostWei, uint256 priceX96, uint256 tradeValueUsd)
+    function _convertGasCostToTokens(uint256 gasCostWei, uint256 priceX96, uint256 tradeValueUsd)
         internal
         view
         returns (uint256 tokenCost)
     {
         // Get normalized prices from oracles
         // Gets validated ETH/USD price
-        uint256 ethUsdPrice = getSafeOraclePrice(ethUsdOracle, ethUsdDecimals);
+        uint256 ethUsdPrice = _getSafeOraclePrice(ethUsdOracle, ethUsdDecimals);
         // Gets validated token/USD price
-        uint256 tokenUsdPrice = getSafeOraclePrice(token0UsdOracle, token0UsdDecimals);
+        uint256 tokenUsdPrice = _getSafeOraclePrice(token0UsdOracle, token0UsdDecimals);
 
         // Converts gas cost from Wei to USD
         uint256 gasCostUsd = (gasCostWei * ethUsdPrice) / 1e18;
@@ -448,13 +425,36 @@ contract DexProfitWars is BaseHook {
     }
 
     /**
+     * @notice Calculates the USD value of a trade using oracle prices.
+     *
+     * @param delta                         The balance changes from the swap.
+     *
+     * @return                              The USD value of the trade.
+     */
+    function _calculateTradeValueUsd(BalanceDelta delta) internal view returns (uint256) {
+        // Get token amounts
+        uint256 amount0 = delta.amount0 > 0 ? uint256(delta.amount0) : uint256(-delta.amount0);
+        uint256 amount1 = delta.amount1 > 0 ? uint256(delta.amount1) : uint256(-delta.amount1);
+
+        // Get token prices in USD
+        uint256 token0Price = _getSafeOraclePrice(token0UsdOracle, token0UsdDecimals);
+        uint256 token1Price = _getSafeOraclePrice(token1UsdOracle, token1UsdDecimals);
+
+        // Calculate total value (taking larger of the two values)
+        uint256 value0 = (amount0 * token0Price) / 1e18;
+        uint256 value1 = (amount1 * token1Price) / 1e18;
+
+        return value0 > value1 ? value0 : value1;
+    }
+
+    /**
      * @notice Retrieves and validates the latest price from a Chainlink oracle,
      *         ensuring the price is fresh and normalizing to 18 decimals.
      *
-     * @param oracle                        The Chainlink price feed aggregator interface
-     * @param decimals                      The number of decimals used by the oracle
+     * @param oracle                        The Chainlink price feed aggregator interface.
+     * @param decimals                      The number of decimals used by the oracle.
      *
-     * @return                              The normalized price with 18 decimals
+     * @return                              The normalized price with 18 decimals.
      *
      * @dev Reverts if:
      *      - Price is stale (older than MAX_ORACLE_AGE)
@@ -462,7 +462,7 @@ contract DexProfitWars is BaseHook {
      *      - Price is zero or negative
      *      - Normalized price is zero
      */
-    function getSafeOraclePrice(AggregatorV3Interface oracle, uint8 decimals) internal view returns (uint256) {
+    function _getSafeOraclePrice(AggregatorV3Interface oracle, uint8 decimals) internal view returns (uint256) {
         // Get latest price data from oracle
         (
             uint80 roundId,
@@ -475,12 +475,12 @@ contract DexProfitWars is BaseHook {
         // Check if price is stale
         if (block.timestamp - updatedAt > MAX_ORACLE_AGE) {
             // Checks if price is too old
-            revert StalePrice(updatedAt);
+            revert DPW_StalePrice(updatedAt);
         }
 
         // Ensure round is complete
         if (answeredInRound < roundId) {
-            revert StalePrice(updatedAt);
+            revert DPW_StalePrice(updatedAt);
         }
 
         // Validate price is positive
@@ -505,10 +505,3 @@ contract DexProfitWars is BaseHook {
     }
 }
 
-// TODO:
-// - Add a way to track the amount of tokens in the bonus pool
-// - Add a way to track the amount of tokens in the reward pool
-// - Add a way to track the amount of tokens in the trading pool
-// - Add a way to track the amount of tokens in the bonus pool
-// - Add a way to track the amount of tokens in the reward pool
-// - Add a way to track the amount of tokens in the trading pool
