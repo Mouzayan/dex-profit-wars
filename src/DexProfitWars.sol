@@ -333,9 +333,13 @@ contract DexProfitWars is BaseHook {
         uint256 priceBeforeX96 = uint256(sqrtPriceX96Before) * uint256(sqrtPriceX96Before);
         uint256 priceAfterX96 = uint256(sqrtPriceX96After) * uint256(sqrtPriceX96After);
 
+        // Get the int128 values
+        int128 amount0 = delta.amount0();
+        int128 amount1 = delta.amount1();
+
         // Get absolute values of tokens swapped
-        uint256 tokenInAmount = delta.amount0 > 0 ? uint256(delta.amount0) : uint256(delta.amount1);
-        uint256 tokenOutAmount = delta.amount0 > 0 ? uint256(-delta.amount1) : uint256(-delta.amount0);
+        uint256 tokenInAmount = amount0 > 0 ? uint256(uint128(amount0)) : uint256(uint128(amount1));
+        uint256 tokenOutAmount = amount0 > 0 ? uint256(uint128(-amount1)) : uint256(uint128(-amount0));
 
         // Calculate values (in terms of one token)
         uint256 valueIn = tokenInAmount * priceBeforeX96;
