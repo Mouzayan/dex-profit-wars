@@ -10,8 +10,10 @@ import {PoolKey} from "v4-core/types/PoolKey.sol";
 import {BalanceDeltaLibrary, BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
+import {IHooks} from "v4-core/interfaces/IHooks.sol";
 
 import {Hooks} from "v4-core/libraries/Hooks.sol";
+import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
 
 /**
  * @title DexProfitWars
@@ -89,6 +91,8 @@ import {Hooks} from "v4-core/libraries/Hooks.sol";
  *         - Do we need circuit breakers?
  */
 contract DexProfitWars is BaseHook {
+    using StateLibrary for IPoolManager;
+    using StateLibrary for IPoolManager;
     using CurrencyLibrary for Currency; // needed ???
     using BalanceDeltaLibrary for BalanceDelta; // needed ???
 
@@ -145,6 +149,8 @@ contract DexProfitWars is BaseHook {
     uint8 private immutable token0UsdDecimals;
     uint8 private immutable token1UsdDecimals;
 
+    IPoolManager manager;
+
     // Create separate errors file
     error DPW_StalePrice(uint256 timestamp);
     error DPW_InvalidPrice(int256 price);
@@ -163,6 +169,7 @@ contract DexProfitWars is BaseHook {
     constructor(IPoolManager _manager, address _ethUsdOracle, address _token0UsdOracle, address _token1UsdOracle)
         BaseHook(_manager)
     {
+        manager = _manager;
         // Initialize price feed interfaces
         ethUsdOracle = AggregatorV3Interface(_ethUsdOracle); // Creates interface to ETH/USD price feed
         token0UsdOracle = AggregatorV3Interface(_token0UsdOracle); // Creates interface to Token0/USD price feed
@@ -215,7 +222,7 @@ contract DexProfitWars is BaseHook {
         returns (bytes4)
     {
         // Get current sqrt price from pool
-        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(key.toId());
+        (uint160 sqrtPriceX96,,,) = manager.getSlot0(key.toId());
 
         // Store gas usage and price data for this swap
         swapGasTracker[sender] = SwapGasTracking({
@@ -223,7 +230,7 @@ contract DexProfitWars is BaseHook {
             sqrtPriceX96Before: sqrtPriceX96 // Record starting price
         });
 
-        return (this.beforeSwap.selector); // Return function selector to indicate success
+        return (IHooks.beforeSwap.selector); // Return function selector to indicate success
     }
 
     /**
