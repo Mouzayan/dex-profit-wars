@@ -328,7 +328,7 @@ contract DexProfitWars is BaseHook {
         uint256 gasUsed,
         uint256 gasPrice,
         uint256 tradeValueUsd
-    ) internal pure returns (int256 profitPercentage) {
+    ) internal returns (int256 profitPercentage) {
         // Convert sqrt price to regular price
         uint256 priceBeforeX96 = uint256(sqrtPriceX96Before) * uint256(sqrtPriceX96Before);
         uint256 priceAfterX96 = uint256(sqrtPriceX96After) * uint256(sqrtPriceX96After);
@@ -445,17 +445,21 @@ contract DexProfitWars is BaseHook {
      * @return                              The USD value of the trade.
      */
     function _calculateTradeValueUsd(BalanceDelta delta) internal view returns (uint256) {
+        // Get the int128 values
+        int128 amount0 = delta.amount0();
+        int128 amount1 = delta.amount1();
+
         // Get token amounts
-        uint256 amount0 = delta.amount0 > 0 ? uint256(delta.amount0) : uint256(-delta.amount0);
-        uint256 amount1 = delta.amount1 > 0 ? uint256(delta.amount1) : uint256(-delta.amount1);
+        uint256 tokenAmount0 = amount0 > 0 ? uint256(uint128(amount0)) : uint256(uint128(-amount0));
+        uint256 tokenAmount1 = amount1 > 0 ? uint256(uint128(amount1)) : uint256(uint128(-amount1));
 
         // Get token prices in USD
         uint256 token0Price = _getSafeOraclePrice(token0UsdOracle, token0UsdDecimals);
         uint256 token1Price = _getSafeOraclePrice(token1UsdOracle, token1UsdDecimals);
 
         // Calculate total value (taking larger of the two values)
-        uint256 value0 = (amount0 * token0Price) / 1e18;
-        uint256 value1 = (amount1 * token1Price) / 1e18;
+        uint256 value0 = (tokenAmount0 * token0Price) / 1e18;
+        uint256 value1 = (tokenAmount1 * token1Price) / 1e18;
 
         return value0 > value1 ? value0 : value1;
     }
