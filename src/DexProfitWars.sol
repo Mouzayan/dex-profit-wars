@@ -249,7 +249,7 @@ contract DexProfitWars is BaseHook {
         PoolKey calldata key,
         IPoolManager.SwapParams calldata params,
         BalanceDelta delta
-    ) external returns (bytes4) {
+    ) external returns (bytes4, int128) {
         // Retrieve stored gas and price data from before swap
         SwapGasTracking memory tracking = swapGasTracker[sender];
 
@@ -262,9 +262,11 @@ contract DexProfitWars is BaseHook {
         // Get current gas price for cost calculation
         uint256 gasPrice = tx.gasprice;
 
+        uint256 tradeValueUsd = _calculateTradeValueUsd(delta);
+
         // Calculate percentage profit/loss including gas costs
         int256 profitPercentage =
-            _calculateSwapPnL(delta, tracking.sqrtPriceX96Before, sqrtPriceX96After, gasUsed, gasPrice);
+            _calculateSwapPnL(delta, tracking.sqrtPriceX96Before, sqrtPriceX96After, gasUsed, gasPrice, tradeValueUsd);
 
         // Clean up gas tracking
         delete swapGasTracker[sender];
@@ -276,7 +278,7 @@ contract DexProfitWars is BaseHook {
         }
 
         // Return function selector to indicate success
-        return (this.afterSwap.selector, 0);
+        return (IHooks.afterSwap.selector, 0);
     }
 
     /**
