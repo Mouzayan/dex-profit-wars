@@ -89,6 +89,7 @@ import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
  *         - How to be gas effificent since swap PnL is calcualted at every swap
  *         - Do we need more so[histicated price validation?
  *         - Do we need circuit breakers?
+ *         - Add bonus locking period - IMPORTANT
  */
 contract DexProfitWars is BaseHook {
     using StateLibrary for IPoolManager;
