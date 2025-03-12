@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 
 pragma solidity 0.8.26;
-// TODO: CHECK IF SOME IMPORTS ARE NOT NEEDED
+// TODO: CHECK IF SOME IMPORTS ARE NOT NEEDED !!!
 import {Test} from "forge-std/Test.sol";
+import "forge-std/console.sol";
 
 import {Deployers} from "@uniswap/v4-core/test/utils/Deployers.sol";
 import {PoolSwapTest} from "v4-core/test/PoolSwapTest.sol";
@@ -18,7 +19,7 @@ import {TickMath} from "v4-core/libraries/TickMath.sol";
 import {SqrtPriceMath} from "v4-core/libraries/SqrtPriceMath.sol";
 import {LiquidityAmounts} from "@uniswap/v4-core/test/utils/LiquidityAmounts.sol";
 
-import "forge-std/console.sol";
+import {MockV3Aggregator} from "./mocks/MockV3Aggregator.sol";
 import {DexProfitWars} from "../src/DexProfitWars.sol";
 
 /**
@@ -48,39 +49,57 @@ contract DexProfitWarsTest is Test, Deployers {
 
     MockERC20 token; // our token to use in the ETH-TOKEN pool
 
-    // Native tokens are represented by address(0)
-    Currency ethCurrency = Currency.wrap(address(0));
+    Currency ethCurrency = Currency.wrap(address(0)); // ETH
     Currency tokenCurrency;
 
     DexProfitWars hook;
+
+    MockV3Aggregator ethUsdOracle;
+    MockV3Aggregator token0UsdOracle;
+    MockV3Aggregator token1UsdOracle;
 
     function setUp() public {
         // Deploy PoolManager and Router contracts
         deployFreshManagerAndRouters();
 
-        // Deploy our TOKEN contract
+        // Deploy mock price feeds
+        // Chainlink typically uses 8 decimals
+        ethUsdOracle = new MockV3Aggregator(8, 2000e8); // ETH = $2000
+        token0UsdOracle = new MockV3Aggregator(8, 1e8); // TOKEN0 = $1
+        token1UsdOracle = new MockV3Aggregator(8, 1e8); // TOKEN1 = $1
+
+        // Deploy TOKEN contract
         token = new MockERC20("Test Token", "TEST", 18);
         tokenCurrency = Currency.wrap(address(token));
 
-        // Mint a bunch of TOKEN to ourselves
+        // Mint a bunch of TOKEN to the contract for bonus rewards
         token.mint(address(this), 1000 ether);
 
         // Deploy hook to an address that has the proper flags set
-        uint160 flags = uint160(Hooks.AFTER_ADD_LIQUIDITY_FLAG | Hooks.AFTER_SWAP_FLAG);
-        deployCodeTo("DexProfitWars.sol", abi.encode(manager, "Points Token", "TEST_POINTS"), address(flags));
+        uint160 flags = uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG);
+        deployCodeTo(
+            "DexProfitWars.sol",
+            abi.encode(
+                manager,
+                address(ethUsdOracle),
+                address(token0UsdOracle),
+                address(token1UsdOracle)
+            ),
+            address(flags)
+        );
 
         // Deploy our hook
         hook = DexProfitWars(address(flags));
 
-        // Approve our TOKEN for spending on the swap router and modify liquidity router
+        // approve TOKEN for spending on the swap router and modify liquidity router
         // These variables are coming from the `Deployers` contract
         token.approve(address(swapRouter), type(uint256).max);
         token.approve(address(modifyLiquidityRouter), type(uint256).max);
 
         // Initialize a pool
         (key,) = initPool(
-            ethCurrency, // Currency 0 = ETH
-            tokenCurrency, // Currency 1 = TOKEN
+            ethCurrency, // Currency 0
+            tokenCurrency, // Currency
             hook, // Hook Contract
             3000, // Swap Fees
             SQRT_PRICE_1_1 // Initial Sqrt(P) value = 1
