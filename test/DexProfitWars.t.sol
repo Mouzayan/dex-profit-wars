@@ -2,6 +2,7 @@
 
 pragma solidity 0.8.26;
 // TODO: CHECK IF SOME IMPORTS ARE NOT NEEDED !!!
+
 import {Test} from "forge-std/Test.sol";
 import "forge-std/console.sol";
 
@@ -43,7 +44,6 @@ import {DexProfitWars} from "../src/DexProfitWars.sol";
  * invalid/stale.
  * 10. Test that multiple trades for the same trader accumulate statistics correctly over time.
  */
-
 contract DexProfitWarsTest is Test, Deployers {
     using CurrencyLibrary for Currency;
 
@@ -82,12 +82,7 @@ contract DexProfitWarsTest is Test, Deployers {
         uint160 flags = uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG);
         deployCodeTo(
             "DexProfitWars.sol",
-            abi.encode(
-                manager,
-                address(ethUsdOracle),
-                address(token0UsdOracle),
-                address(token1UsdOracle)
-            ),
+            abi.encode(manager, address(ethUsdOracle), address(token0UsdOracle), address(token1UsdOracle)),
             address(flags)
         );
 
@@ -120,18 +115,10 @@ contract DexProfitWarsTest is Test, Deployers {
         uint160 sqrtPriceAtTickUpper = TickMath.getSqrtPriceAtTick(60);
 
         uint256 ethToAdd = 0.1 ether;
-        uint128 liquidityDelta = LiquidityAmounts.getLiquidityForAmount0(
-            sqrtPriceAtTickLower,
-            SQRT_PRICE_1_1,
-            ethToAdd
-        );
+        uint128 liquidityDelta = LiquidityAmounts.getLiquidityForAmount0(sqrtPriceAtTickLower, SQRT_PRICE_1_1, ethToAdd);
 
         uint256 tokenToAdd =
-            LiquidityAmounts.getAmount1ForLiquidity(
-                sqrtPriceAtTickLower,
-                SQRT_PRICE_1_1,
-                liquidityDelta
-        );
+            LiquidityAmounts.getAmount1ForLiquidity(sqrtPriceAtTickLower, SQRT_PRICE_1_1, liquidityDelta);
 
         modifyLiquidityRouter.modifyLiquidity{value: ethToAdd}(
             key,
@@ -171,5 +158,4 @@ contract DexProfitWarsTest is Test, Deployers {
 
         assertEq(balanceAfterSwap - balanceAfterAddLiquidity, 2 * 10 ** 14);
     }
-
 }

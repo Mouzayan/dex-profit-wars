@@ -419,7 +419,11 @@ contract DexProfitWars is BaseHook {
     /**
      * TODO: ADD Natspec
      */
-    function _calculateBonus(address trader, int256 profitPercentage, uint256 profitUsd) internal view returns (uint256) {
+    function _calculateBonus(address trader, int256 profitPercentage, uint256 profitUsd)
+        internal
+        view
+        returns (uint256)
+    {
         TraderStats memory stats = traderStats[trader];
 
         // Base bonus based on profit percentage
@@ -428,18 +432,18 @@ contract DexProfitWars is BaseHook {
         // Multiplier based on success rate
         if (stats.totalTrades > 0) {
             uint256 successRate = (stats.profitableTrades * 100) / stats.totalTrades;
-            if (successRate > 70) bonus = bonus * 12 / 10;  // 1.2x multiplier for >70% success
-            if (successRate > 90) bonus = bonus * 15 / 10;  // 1.5x multiplier for >90% success
+            if (successRate > 70) bonus = bonus * 12 / 10; // 1.2x multiplier for >70% success
+            if (successRate > 90) bonus = bonus * 15 / 10; // 1.5x multiplier for >90% success
         }
 
         // Additional multiplier for exceptional trades
         if (profitPercentage >= stats.bestTradePercentage) {
-            bonus = bonus * 13 / 10;  // 1.3x multiplier for new best trade
+            bonus = bonus * 13 / 10; // 1.3x multiplier for new best trade
         }
 
         // Multiplier for consistent trading (if traded within last 24 hours)
         if (block.timestamp - stats.lastTradeTimestamp < 1 days) {
-            bonus = bonus * 11 / 10;  // 1.1x multiplier for active traders
+            bonus = bonus * 11 / 10; // 1.1x multiplier for active traders
         }
 
         return bonus;
