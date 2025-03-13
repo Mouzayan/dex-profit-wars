@@ -109,20 +109,23 @@ contract DexProfitWars is BaseHook {
     struct TraderStats {
         uint256 totalTrades;
         uint256 profitableTrades;
-        int256 bestTradePercentage;
+        int256 bestTradePercentage; // Best trade % within current bonus window
         uint256 totalProfitUsd;
         uint256 lastTradeTimestamp;
     }
-
-    // Mapping to store trader statistics
-    mapping(address => TraderStats) public traderStats;
 
     struct SwapGasTracking {
         uint256 gasStart;
         uint160 sqrtPriceX96Before;
     }
 
+    // Mapping to store trader statistics
+    mapping(address => TraderStats) public traderStats;
+
     mapping(address => SwapGasTracking) public swapGasTracker;
+
+    // track reward tokens earned by each user
+    mapping(address => uint256) public balanceOf;
 
     // Gas price caching
     // Make these private??????
@@ -137,7 +140,8 @@ contract DexProfitWars is BaseHook {
 
     // Oracle staleness thresholds
     // Make these private??????
-    uint256 public constant MAX_ORACLE_AGE = 1 hours;
+    uint256 private constant MAX_ORACLE_AGE = 1 hours;
+    uint256 private constant BONUS_WINDOW = 2 days; // VALUE TO BE RE-THOUGHT
 
     // Price oracle interfaces
     // Make these private??????
@@ -282,6 +286,7 @@ contract DexProfitWars is BaseHook {
         return (IHooks.afterSwap.selector, 0);
     }
 
+    // ========================================= HELPER FUNCTIONS ========================================
     /**
      * @notice Updates trader statistics after a profitable trade.
      *
@@ -391,7 +396,55 @@ contract DexProfitWars is BaseHook {
         return cachedGasPrice;
     }
 
-    // ========================================== VIEW FUNCTIONS =========================================
+    /**
+     * Called after a profitable swap
+     * TODO: ADD Natspec
+     */
+    function _awardBonus(address trader, uint256 profitPercentage) internal {
+        uint256 bonusTokens = _calculateBonus(trader, profitPercentage, profitUsd);
+        balanceOf[trader] += bonusTokens;
+
+        // Update trader stats
+        traderStats[trader].totalTrades += 1;
+        if (profitPercentage > 0) {
+            traderStats[trader].profitableTrades += 1;
+            traderStats[trader].totalProfitUsd += profitUsd;
+            if (profitPercentage > traderStats[trader].bestTradePercentage) {
+                traderStats[trader].bestTradePercentage = profitPercentage;
+            }
+        }
+        traderStats[trader].lastTradeTimestamp = block.timestamp;
+    }
+
+    /**
+     * TODO: ADD Natspec
+     */
+    function _calculateBonus(address trader, int256 profitPercentage, uint256 profitUsd) internal view returns (uint256) {
+        TraderStats memory stats = traderStats[trader];
+
+        // Base bonus based on profit percentage
+        uint256 bonus = uint256(profitPercentage > 0 ? profitPercentage : 0) * BASE_BONUS_RATE;
+
+        // Multiplier based on success rate
+        if (stats.totalTrades > 0) {
+            uint256 successRate = (stats.profitableTrades * 100) / stats.totalTrades;
+            if (successRate > 70) bonus = bonus * 12 / 10;  // 1.2x multiplier for >70% success
+            if (successRate > 90) bonus = bonus * 15 / 10;  // 1.5x multiplier for >90% success
+        }
+
+        // Additional multiplier for exceptional trades
+        if (profitPercentage >= stats.bestTradePercentage) {
+            bonus = bonus * 13 / 10;  // 1.3x multiplier for new best trade
+        }
+
+        // Multiplier for consistent trading (if traded within last 24 hours)
+        if (block.timestamp - stats.lastTradeTimestamp < 1 days) {
+            bonus = bonus * 11 / 10;  // 1.1x multiplier for active traders
+        }
+
+        return bonus;
+    }
+
     /**
      * @notice Converts gas costs in Wei to token value with thresholds.
      *

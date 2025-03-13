@@ -47,10 +47,11 @@ import {DexProfitWars} from "../src/DexProfitWars.sol";
 contract DexProfitWarsTest is Test, Deployers {
     using CurrencyLibrary for Currency;
 
-    MockERC20 token; // our token to use in the ETH-TOKEN pool
+    MockERC20 token0;
+    MockERC20 token1;
 
-    Currency ethCurrency = Currency.wrap(address(0)); // ETH
-    Currency tokenCurrency;
+    Currency token0Currency;
+    Currency token1Currency;
 
     DexProfitWars hook;
 
@@ -59,21 +60,23 @@ contract DexProfitWarsTest is Test, Deployers {
     MockV3Aggregator token1UsdOracle;
 
     function setUp() public {
-        // Deploy PoolManager and Router contracts
+        // deploy PoolManager and Router contracts
         deployFreshManagerAndRouters();
 
-        // Deploy mock price feeds
-        // Chainlink typically uses 8 decimals
+        // deploy mock price feeds (Chainlink typically uses 8 decimals)
         ethUsdOracle = new MockV3Aggregator(8, 2000e8); // ETH = $2000
         token0UsdOracle = new MockV3Aggregator(8, 1e8); // TOKEN0 = $1
         token1UsdOracle = new MockV3Aggregator(8, 1e8); // TOKEN1 = $1
 
         // Deploy TOKEN contract
-        token = new MockERC20("Test Token", "TEST", 18);
-        tokenCurrency = Currency.wrap(address(token));
+        token0 = new MockERC20("Test Token0", "TEST0", 18);
+        token1 = new MockERC20("Test Token1", "TEST1", 18);
+        token0Currency = Currency.wrap(address(token0));
+        token1Currency = Currency.wrap(address(token1));
 
-        // Mint a bunch of TOKEN to the contract for bonus rewards
-        token.mint(address(this), 1000 ether);
+        // mint tokens to the contract for testing
+        token0.mint(address(this), 1000 ether);
+        token1.mint(address(this), 1000 ether);
 
         // Deploy hook to an address that has the proper flags set
         uint160 flags = uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG);
@@ -88,22 +91,85 @@ contract DexProfitWarsTest is Test, Deployers {
             address(flags)
         );
 
-        // Deploy our hook
+        // beploy hook
         hook = DexProfitWars(address(flags));
 
-        // approve TOKEN for spending on the swap router and modify liquidity router
-        // These variables are coming from the `Deployers` contract
-        token.approve(address(swapRouter), type(uint256).max);
-        token.approve(address(modifyLiquidityRouter), type(uint256).max);
+        // approve tokens for spending
+        token0.approve(address(swapRouter), type(uint256).max);
+        token0.approve(address(modifyLiquidityRouter), type(uint256).max);
+        token1.approve(address(swapRouter), type(uint256).max);
+        token1.approve(address(modifyLiquidityRouter), type(uint256).max);
 
-        // Initialize a pool
+        // initialize a pool
         (key,) = initPool(
-            ethCurrency, // Currency 0
-            tokenCurrency, // Currency
+            token0Currency, // Currency 0
+            token1Currency, // Currency 1
             hook, // Hook Contract
             3000, // Swap Fees
             SQRT_PRICE_1_1 // Initial Sqrt(P) value = 1
         );
+    }
+
+    function test_addLiquidityAndSwap() public {
+        uint256 balanceBefore = hook.balanceOf(address(this));
+
+        // set user address in hook data
+        bytes memory hookData = abi.encode(address(this));
+
+        uint160 sqrtPriceAtTickLower = TickMath.getSqrtPriceAtTick(-60);
+        uint160 sqrtPriceAtTickUpper = TickMath.getSqrtPriceAtTick(60);
+
+        uint256 ethToAdd = 0.1 ether;
+        uint128 liquidityDelta = LiquidityAmounts.getLiquidityForAmount0(
+            sqrtPriceAtTickLower,
+            SQRT_PRICE_1_1,
+            ethToAdd
+        );
+
+        uint256 tokenToAdd =
+            LiquidityAmounts.getAmount1ForLiquidity(
+                sqrtPriceAtTickLower,
+                SQRT_PRICE_1_1,
+                liquidityDelta
+        );
+
+        modifyLiquidityRouter.modifyLiquidity{value: ethToAdd}(
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: -60,
+                tickUpper: 60,
+                liquidityDelta: int256(uint256(liquidityDelta)),
+                salt: bytes32(0)
+            }),
+            hookData
+        );
+
+        uint256 balanceAfterAddLiquidity = hook.balanceOf(address(this));
+
+        assertApproxEqAbs(
+            balanceAfterAddLiquidity - balanceBefore,
+            0.1 ether,
+            0.001 ether // error margin for precision loss
+        );
+
+        // Now we swap
+        // We will swap 0.001 ether for tokens
+        // We should get 20% of 0.001 * 10**18 points
+        // = 2 * 10**14
+        swapRouter.swap{value: 0.001 ether}(
+            key,
+            IPoolManager.SwapParams({
+                zeroForOne: true,
+                amountSpecified: -0.001 ether, // Exact input for output swap
+                sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            }),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            hookData
+        );
+
+        uint256 balanceAfterSwap = hook.balanceOf(address(this));
+
+        assertEq(balanceAfterSwap - balanceAfterAddLiquidity, 2 * 10 ** 14);
     }
 
 }
