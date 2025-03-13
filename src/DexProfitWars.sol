@@ -90,6 +90,7 @@ import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
  *         - Do we need more so[histicated price validation?
  *         - Do we need circuit breakers?
  *         - Add bonus locking period - IMPORTANT
+ *         - Add Cope Trading feature
  */
 contract DexProfitWars is BaseHook {
     using StateLibrary for IPoolManager;
