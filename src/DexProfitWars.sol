@@ -203,7 +203,7 @@ contract DexProfitWars is BaseHook {
             afterInitialize: false,
             beforeAddLiquidity: false,
             beforeRemoveLiquidity: false,
-            afterAddLiquidity: true,
+            afterAddLiquidity: false,
             afterRemoveLiquidity: false,
             beforeSwap: true, // Hook before swap to store initial state
             afterSwap: true, // Hook after swap to calculate profits
