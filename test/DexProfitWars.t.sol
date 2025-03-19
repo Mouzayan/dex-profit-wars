@@ -158,4 +158,44 @@ contract DexProfitWarsTest is Test, Deployers {
 
         assertEq(balanceAfterSwap - balanceAfterAddLiquidity, 2 * 10 ** 14);
     }
+
+    // Test Profit Calculation and Gas Costs
+    function test_calculateSwapPnL() public {}
+    function test_abd1() public {} // Verify gas costs are correctly subtracted from profits
+    function test_abd2() public {} // Test the 2% minimum profit threshold
+    function test_abd3() public {} // Test negative profit scenarios
+
+    // Bonus Point System
+    function test_calculateBonus() public {}
+    function test_calculateBonus1() public {} // Verify bonus points are awarded correctly based on profit percentage
+    function test_calculateBonus2() public {} // Test the 2-day window mechanism
+    function test_calculateBonus3() public {} // Test best trade percentage tracking
+
+    // Trader Statistics
+    function test_updateTraderStats() public {}
+    function test_updateTraderStats1() public {} // totalTrades counter
+    function test_updateTraderStats2() public {} // profitableTrades counter
+    function test_updateTraderStat3() public {} // bestTradePercentage updates
+    function test_updateTraderStats4() public {} // totalBonusPoints accumulation
+    function test_updateTraderStats5() public {} // lastTradeTimestamp updates
+
+    // Gas Price Caching
+    function test_getGasPrice() public {} // caching mechanism
+    function test_getGasPrice1() public {} // test cache update intervals
+
+    // Full swap flow
+    function test_beforeSwap() public {} // state recording
+    function test_afterSwap() public {} // calculations
+    function test_swapFlow() public {} // Test complete flow from swap initiation to bonus award
+
+    // Trading Windows
+    function test_bestTrades() public {} // Test trades within same 2-day window
+    function test_bestTrades1() public {} // Test trades across different windows
+    function test_bestTrades2() public {} // Test best trade percentage persistence
+
+    // Edge Cases
+    function test_gasExceedsTradeValue() public {} // Test gas costs exceeding trade value
+    function test_gasExceedsTradeValue1() public {} // Test trades just above/below minimum profit threshold
+    function test_gasExceedsTradeValue2() public {} // Test timestamp edge cases for windows
+
 }
