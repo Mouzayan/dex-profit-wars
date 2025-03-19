@@ -110,8 +110,8 @@ contract DexProfitWars is BaseHook {
     struct TraderStats {
         uint256 totalTrades;
         uint256 profitableTrades;
-        int256 bestTradePercentage; // Best trade % within current bonus window
-        uint256 totalProfitUsd;
+        int256 bestTradePercentage; // personal best / best trade % within current bonus window
+        uint256 totalBonusPoints;
         uint256 lastTradeTimestamp;
     }
 
@@ -143,6 +143,9 @@ contract DexProfitWars is BaseHook {
     // Make these private??????
     uint256 private constant MAX_ORACLE_AGE = 1 hours;
     uint256 private constant BONUS_WINDOW = 2 days; // VALUE TO BE RE-THOUGHT
+    // 1e14 i.e., 0.0001 tokens per 1% profit
+    uint256 constant BASE_BONUS_RATE = 1e14;
+    uint256 constant MINIMUM_PROFIT_BPS = 200; // 2% minimum profit
 
     // Price oracle interfaces
     // Make these private??????
@@ -302,15 +305,14 @@ contract DexProfitWars is BaseHook {
         stats.totalTrades++;
         stats.profitableTrades++;
 
-        // Update best trade percentage if this trade was better
-        if (profitPercentage > stats.bestTradePercentage) {
-            stats.bestTradePercentage = profitPercentage;
+        // Calculate and award bonus points if profit meets minimum threshold
+        if (profitPercentage > 0 && uint256(profitPercentage) >= MINIMUM_PROFIT_BPS) {
+            uint256 bonusPoints = _calculateBonus(trader, profitPercentage);
+            if (bonusPoints > 0) {
+                stats.totalBonusPoints += bonusPoints;
+                balanceOf[trader] += bonusPoints;
+            }
         }
-
-        // Calculate and update total profit in USD
-        uint256 tradeValueUsd = _calculateTradeValueUsd(delta);
-        uint256 profitUsd = (tradeValueUsd * uint256(profitPercentage)) / 1e6;
-        stats.totalProfitUsd += profitUsd;
 
         // Update last trade timestamp
         stats.lastTradeTimestamp = block.timestamp;
@@ -398,54 +400,31 @@ contract DexProfitWars is BaseHook {
     }
 
     /**
-     * Called after a profitable swap
      * TODO: ADD Natspec
      */
-    function _awardBonus(address trader, uint256 profitPercentage) internal {
-        uint256 bonusTokens = _calculateBonus(trader, profitPercentage, profitUsd);
-        balanceOf[trader] += bonusTokens;
-
-        // Update trader stats
-        traderStats[trader].totalTrades += 1;
-        if (profitPercentage > 0) {
-            traderStats[trader].profitableTrades += 1;
-            traderStats[trader].totalProfitUsd += profitUsd;
-            if (profitPercentage > traderStats[trader].bestTradePercentage) {
-                traderStats[trader].bestTradePercentage = profitPercentage;
-            }
-        }
-        traderStats[trader].lastTradeTimestamp = block.timestamp;
-    }
-
-    /**
-     * TODO: ADD Natspec
-     */
-    function _calculateBonus(address trader, int256 profitPercentage, uint256 profitUsd)
+    function _calculateBonus(address trader, int256 currentProfitPercentage)
         internal
         view
         returns (uint256)
     {
+        // First check if profit is positive and convert to uint256 if it is
+        // if yes then convert to uint256 for comparison with MINIMUM_PROFIT_BPS
+        // profit in bps (1% = 100)
+        if (currentProfitPercentage <= 0 || uint256(currentProfitPercentage) < MINIMUM_PROFIT_BPS) {
+            return 0; // No bonus for negative profits or trades below 2% profit
+        }
+
         TraderStats memory stats = traderStats[trader];
+        // Check if we're still within the bonus window
+        bool isWithinWindow = (block.timestamp - stats.lastTradeTimestamp) <= BONUS_WINDOW;
 
-        // Base bonus based on profit percentage
-        uint256 bonus = uint256(profitPercentage > 0 ? profitPercentage : 0) * BASE_BONUS_RATE;
+        // Use the best trade percentage from the window for bonus calculation
+        int256 profitForBonus = isWithinWindow ?
+            (currentProfitPercentage > stats.bestTradePercentage ? currentProfitPercentage : stats.bestTradePercentage) :
+            currentProfitPercentage;
 
-        // Multiplier based on success rate
-        if (stats.totalTrades > 0) {
-            uint256 successRate = (stats.profitableTrades * 100) / stats.totalTrades;
-            if (successRate > 70) bonus = bonus * 12 / 10; // 1.2x multiplier for >70% success
-            if (successRate > 90) bonus = bonus * 15 / 10; // 1.5x multiplier for >90% success
-        }
-
-        // Additional multiplier for exceptional trades
-        if (profitPercentage >= stats.bestTradePercentage) {
-            bonus = bonus * 13 / 10; // 1.3x multiplier for new best trade
-        }
-
-        // Multiplier for consistent trading (if traded within last 24 hours)
-        if (block.timestamp - stats.lastTradeTimestamp < 1 days) {
-            bonus = bonus * 11 / 10; // 1.1x multiplier for active traders
-        }
+        // Convert basis points to percentage (divide by 100)
+        uint256 bonus = uint256(profitForBonus) * BASE_BONUS_RATE / 100;
 
         return bonus;
     }
