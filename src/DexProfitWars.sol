@@ -274,15 +274,20 @@ contract DexProfitWars is BaseHook {
         uint256 tradeValueUsd = _calculateTradeValueUsd(delta);
 
         // Calculate percentage profit/loss including gas costs
-        int256 profitPercentage =
-            _calculateSwapPnL(delta, tracking.sqrtPriceX96Before, sqrtPriceX96After, gasUsed, gasPrice, tradeValueUsd);
+        int256 profitPercentage = _calculateSwapPnL(
+            delta,
+            tracking.sqrtPriceX96Before,
+            sqrtPriceX96After,
+            gasUsed,
+            gasPrice,
+            tradeValueUsd
+        );
 
         // Clean up gas tracking
         delete swapGasTracker[sender];
 
-        // If profit exceeds 2% threshold, update trader's statistics
-        if (profitPercentage >= 2_000_000) {
-            // 2% = 2_000_000
+        // Only update stats and award bonus if profit meets minimum threshold
+        if (profitPercentage > 0 && uint256(profitPercentage) >= MINIMUM_PROFIT_BPS) {
             _updateTraderStats(sender, delta, profitPercentage);
         }
 
@@ -303,18 +308,22 @@ contract DexProfitWars is BaseHook {
 
         // Update trade counts
         stats.totalTrades++;
+        // Only update profitable trade stats if we made it here
+        // (we know profit exceeds minimum threshold from afterSwap check)
         stats.profitableTrades++;
 
-        // Calculate and award bonus points if profit meets minimum threshold
-        if (profitPercentage > 0 && uint256(profitPercentage) >= MINIMUM_PROFIT_BPS) {
-            uint256 bonusPoints = _calculateBonus(trader, profitPercentage);
-            if (bonusPoints > 0) {
-                stats.totalBonusPoints += bonusPoints;
-                balanceOf[trader] += bonusPoints;
-            }
+        // Calculate bonus points based on profit percentage
+        uint256 bonusPoints = _calculateBonus(trader, profitPercentage);
+        if (bonusPoints > 0) {
+            stats.totalBonusPoints += bonusPoints;
+            balanceOf[trader] += bonusPoints;
         }
 
-        // Update last trade timestamp
+        // Update best trade percentage if better
+        if (profitPercentage > stats.bestTradePercentage) {
+            stats.bestTradePercentage = profitPercentage;
+        }
+
         stats.lastTradeTimestamp = block.timestamp;
     }
 
