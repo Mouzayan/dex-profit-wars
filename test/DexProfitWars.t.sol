@@ -162,9 +162,6 @@ contract DexProfitWarsTest is Test, Deployers {
         // Record balances and state before swap
         uint256 balanceBefore = token1.balanceOf(address(this));
 
-        // // set a realistic timestamp (Jan 1, 2024)
-        // vm.warp(1704067200);
-
         // Do a swap that should be profitable
         swapRouter.swap{value: uint256(0.01 ether)}(
             key,
@@ -179,13 +176,19 @@ contract DexProfitWarsTest is Test, Deployers {
             }),
             hookData
         );
-        console.log("block.timestamp", block.timestamp);
+        console.log("TEST block.timestamp", block.timestamp);
         // Get trader stats after swap
         DexProfitWars.TraderStats memory stats = hook.getTraderStats(address(this));
+        console.log("TEST address(this)", address(this));
+        console.log("TEST totalTrades", stats.totalTrades);
+        console.log("TEST Best trade percentage (bps)", stats.bestTradePercentage);
+        console.log("TEST Profitable trades", stats.profitableTrades);
+        console.log("TEST Stats totalBonusPoints", stats.totalBonusPoints);
+        console.log("TEST Stats lastTradeTimestamp", stats.lastTradeTimestamp);
 
         // Assertions
-        assertTrue(stats.totalTrades == 1, "Should record one trade");
-        assertTrue(stats.profitableTrades == 1, "Trade should be profitable");
+        assertEq(stats.totalTrades, 1);
+        assertEq(stats.profitableTrades, 1);
         assertTrue(stats.bestTradePercentage > 0, "Should record positive profit");
         assertTrue(
             stats.bestTradePercentage >= int256(MINIMUM_PROFIT_BPS),
@@ -196,10 +199,7 @@ contract DexProfitWarsTest is Test, Deployers {
         uint256 balanceAfter = token1.balanceOf(address(this));
         uint256 amountReceived = balanceAfter - balanceBefore;
 
-        console.log("Best trade percentage (bps)", stats.bestTradePercentage);
         console.log("Amount received", amountReceived);
-        console.log("Profitable trades", stats.profitableTrades);
-        console.log("Total trades", stats.totalTrades);
     }
 
     function test_abd1() public {} // Verify gas costs are correctly subtracted from profits

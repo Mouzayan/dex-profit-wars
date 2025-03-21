@@ -257,6 +257,7 @@ contract DexProfitWars is BaseHook {
      * @param key                           The pool key containing token pair and fee information.
      * @param params                        The swap parameters including amount and direction.
      * @param delta                         The balance changes resulting from the swap.
+     * @param hookData                      /////// TODO: ADD this
      *
      * @return                              The function selector to indicate successful hook execution.
      */
@@ -265,7 +266,7 @@ contract DexProfitWars is BaseHook {
         PoolKey calldata key,
         IPoolManager.SwapParams calldata params,
         BalanceDelta delta,
-        bytes calldata
+        bytes calldata hookData
     ) internal override returns (bytes4, int128) {
         // Get final price after swap completion
         (uint160 sqrtPriceX96After,,,) = manager.getSlot0(key.toId());
@@ -291,13 +292,18 @@ contract DexProfitWars is BaseHook {
             gasPrice
         );
 
-        console.log("profitPercentage", profitPercentage);
+        console.log("CONTRACT profitPercentage", profitPercentage);
+
+        // decode the actual trader address from hookData
+        address traderAddress = abi.decode(hookData, (address));
+        console.log("CONTRACT traderAddress", traderAddress);
+        console.log("CONTRACT sender address", sender);
+
+        // Update trader stats with the results
+        _updateTraderStats(traderAddress, delta, profitPercentage);
 
         // Clean up gas tracking
         delete swapGasTracker[sender];
-
-        // Update trader stats with the results
-        _updateTraderStats(sender, delta, profitPercentage);
 
         // Return function selector to indicate success
         return (this.afterSwap.selector, 0);
@@ -344,11 +350,11 @@ contract DexProfitWars is BaseHook {
 
         // REMOVE BELOW !!!
         TraderStats memory stats2 = traderStats[trader];
-        console.log("traderStats[trader]", stats2.totalTrades);
-        console.log("traderStats[trader] profitableTrades", stats2.profitableTrades);
-        console.log("traderStats[trader] bestTradePercentage", stats2.bestTradePercentage);
-        console.log("traderStats[trader] totalBonusPoints", stats2.totalBonusPoints);
-        console.log("traderStats[trader] lastTradeTimestamp", stats2.lastTradeTimestamp);
+        console.log("CONTRACT traderStats[trader] totalTrades", stats2.totalTrades);
+        console.log("CONTRACT traderStats[trader] profitableTrades", stats2.profitableTrades);
+        console.log("CONTRACT traderStats[trader] bestTradePercentage", stats2.bestTradePercentage);
+        console.log("CONTRACT traderStats[trader] totalBonusPoints", stats2.totalBonusPoints);
+        console.log("CONTRACT traderStats[trader] lastTradeTimestamp", stats2.lastTradeTimestamp);
     }
 
     /**
