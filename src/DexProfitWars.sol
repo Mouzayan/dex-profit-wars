@@ -1,17 +1,21 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
-
+import {console} from "forge-std/Test.sol"; // REMOVE
 import {BaseHook} from "v4-periphery/src/utils/BaseHook.sol";
 import {ERC20} from "solmate/src/tokens/ERC20.sol"; // Is THIS NEEDED ????
 import {AggregatorV3Interface} from "chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
 import {CurrencyLibrary, Currency} from "v4-core/types/Currency.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
-import {BalanceDeltaLibrary, BalanceDelta} from "v4-core/types/BalanceDelta.sol";
+import {BalanceDeltaLibrary, BalanceDelta} from "v4-core/types/BalanceDelta.sol"; // ?? BOTH IMPORTS  NEEDED??
+import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/types/BeforeSwapDelta.sol"; // ?? BOTH IMPROTS NEEDED??
+import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
 
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 import {IHooks} from "v4-core/interfaces/IHooks.sol";
 
+import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
+import {TickMath} from "v4-core/libraries/TickMath.sol";
 import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
 
@@ -205,8 +209,8 @@ contract DexProfitWars is BaseHook {
             beforeRemoveLiquidity: false,
             afterAddLiquidity: false,
             afterRemoveLiquidity: false,
-            beforeSwap: true, // Hook before swap to store initial state
-            afterSwap: true, // Hook after swap to calculate profits
+            beforeSwap: true, // to store initial state
+            afterSwap: true, // to calculate profits
             beforeDonate: false,
             afterDonate: false,
             beforeSwapReturnDelta: false,
@@ -226,9 +230,12 @@ contract DexProfitWars is BaseHook {
      *
      * @return                              The function selector to indicate successful hook execution.
      */
-    function beforeSwap(address sender, PoolKey calldata key, IPoolManager.SwapParams calldata params)
-        external
-        returns (bytes4)
+    function _beforeSwap(
+        address sender,
+        PoolKey calldata key,
+        IPoolManager.SwapParams calldata params,
+        bytes calldata hookData
+    ) internal override returns (bytes4, BeforeSwapDelta, uint24)
     {
         // Get current sqrt price from pool
         (uint160 sqrtPriceX96,,,) = manager.getSlot0(key.toId());
@@ -239,7 +246,7 @@ contract DexProfitWars is BaseHook {
             sqrtPriceX96Before: sqrtPriceX96 // Record starting price
         });
 
-        return (IHooks.beforeSwap.selector); // Return function selector to indicate success
+        return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, key.fee);
     }
 
     /**
@@ -253,25 +260,27 @@ contract DexProfitWars is BaseHook {
      *
      * @return                              The function selector to indicate successful hook execution.
      */
-    function afterSwap(
+    function _afterSwap(
         address sender,
         PoolKey calldata key,
         IPoolManager.SwapParams calldata params,
-        BalanceDelta delta
-    ) external returns (bytes4, int128) {
+        BalanceDelta delta,
+        bytes calldata
+    ) internal override returns (bytes4, int128) {
+        // Get final price after swap completion
+        (uint160 sqrtPriceX96After,,,) = manager.getSlot0(key.toId());
+        console.log("sqrtPriceX96After", sqrtPriceX96After);
+
         // Retrieve stored gas and price data from before swap
         SwapGasTracking memory tracking = swapGasTracker[sender];
 
         // Calculate total gas used in swap
         uint256 gasUsed = tracking.gasStart - gasleft();
-
-        // Get final price after swap completion
-        (uint160 sqrtPriceX96After,,,) = poolManager.getSlot0(key.toId());
+        console.log("gasUsed", gasUsed);
 
         // Get current gas price for cost calculation
         uint256 gasPrice = tx.gasprice;
-
-        uint256 tradeValueUsd = _calculateTradeValueUsd(delta);
+        console.log("gasPrice", gasPrice);
 
         // Calculate percentage profit/loss including gas costs
         int256 profitPercentage = _calculateSwapPnL(
@@ -279,20 +288,24 @@ contract DexProfitWars is BaseHook {
             tracking.sqrtPriceX96Before,
             sqrtPriceX96After,
             gasUsed,
-            gasPrice,
-            tradeValueUsd
+            gasPrice
         );
+
+        console.log("profitPercentage", profitPercentage);
 
         // Clean up gas tracking
         delete swapGasTracker[sender];
 
-        // Only update stats and award bonus if profit meets minimum threshold
-        if (profitPercentage > 0 && uint256(profitPercentage) >= MINIMUM_PROFIT_BPS) {
-            _updateTraderStats(sender, delta, profitPercentage);
-        }
+        // Update trader stats with the results
+        _updateTraderStats(sender, delta, profitPercentage);
 
         // Return function selector to indicate success
-        return (IHooks.afterSwap.selector, 0);
+        return (this.afterSwap.selector, 0);
+    }
+
+    // ADD NATSPEC
+    function getTraderStats(address trader) public view returns (TraderStats memory) {
+        return traderStats[trader];
     }
 
     // ========================================= HELPER FUNCTIONS ========================================
@@ -310,7 +323,10 @@ contract DexProfitWars is BaseHook {
         stats.totalTrades++;
         // Only update profitable trade stats if we made it here
         // (we know profit exceeds minimum threshold from afterSwap check)
-        stats.profitableTrades++;
+        // increment if trade is profitable
+        if (profitPercentage > 0) { // Make sure this check is working
+            stats.profitableTrades++;
+        }
 
         // Calculate bonus points based on profit percentage
         uint256 bonusPoints = _calculateBonus(trader, profitPercentage);
@@ -325,6 +341,14 @@ contract DexProfitWars is BaseHook {
         }
 
         stats.lastTradeTimestamp = block.timestamp;
+
+        // REMOVE BELOW !!!
+        TraderStats memory stats2 = traderStats[trader];
+        console.log("traderStats[trader]", stats2.totalTrades);
+        console.log("traderStats[trader] profitableTrades", stats2.profitableTrades);
+        console.log("traderStats[trader] bestTradePercentage", stats2.bestTradePercentage);
+        console.log("traderStats[trader] totalBonusPoints", stats2.totalBonusPoints);
+        console.log("traderStats[trader] lastTradeTimestamp", stats2.lastTradeTimestamp);
     }
 
     /**
@@ -335,7 +359,6 @@ contract DexProfitWars is BaseHook {
      * @param sqrtPriceX96After             Price after swap in Q96 format.
      * @param gasUsed                       Amount of gas used in the swap.
      * @param gasPrice                      Current gas price in Wei.
-     * @param tradeValueUsd                 USD value of the trade.
      *
      * @return profitPercentage             The profit/loss as a percentage (scaled by 1e6, where 1_000_000 = 100%)
      */
@@ -344,8 +367,7 @@ contract DexProfitWars is BaseHook {
         uint160 sqrtPriceX96Before,
         uint160 sqrtPriceX96After,
         uint256 gasUsed,
-        uint256 gasPrice,
-        uint256 tradeValueUsd
+        uint256 gasPrice
     ) internal returns (int256 profitPercentage) {
         // Convert sqrt price to regular price
         uint256 priceBeforeX96 = uint256(sqrtPriceX96Before) * uint256(sqrtPriceX96Before);
@@ -365,7 +387,7 @@ contract DexProfitWars is BaseHook {
 
         // Calculate gas costs
         uint256 gasCostWei = gasUsed * _getGasPrice();
-        uint256 gasCostInTokens = _convertGasCostToTokens(gasCostWei, priceBeforeX96, tradeValueUsd);
+        uint256 gasCostInTokens = _convertGasCostToTokens(gasCostWei, priceBeforeX96);
 
         // Subtract gas costs from value out
         if (valueOut > gasCostInTokens) {
@@ -443,7 +465,6 @@ contract DexProfitWars is BaseHook {
      *
      * @param gasCostWei                    Gas cost in Wei.
      * @param priceX96                      Current pool price in Q96 format.
-     * @param tradeValueUsd                 USD value of the trade.
      *
      * @return tokenCost                    Gas cost converted to token value.
      *
@@ -452,7 +473,7 @@ contract DexProfitWars is BaseHook {
      *      - Maximum percentage of trade value (MAX_GAS_COST_BASIS_POINTS)
      *      Returns the lower of the two limits
      */
-    function _convertGasCostToTokens(uint256 gasCostWei, uint256 priceX96, uint256 tradeValueUsd)
+    function _convertGasCostToTokens(uint256 gasCostWei, uint256 priceX96)
         internal
         view
         returns (uint256 tokenCost)
@@ -469,12 +490,6 @@ contract DexProfitWars is BaseHook {
         // First threshold check: Caps gas cost at maximum USD value
         if (gasCostUsd > MAX_GAS_COST_USD) {
             gasCostUsd = MAX_GAS_COST_USD;
-        }
-
-        // Second threshold check
-        uint256 maxGasCostByValue = (tradeValueUsd * MAX_GAS_COST_BASIS_POINTS) / 10_000;
-        if (gasCostUsd > maxGasCostByValue) {
-            gasCostUsd = maxGasCostByValue;
         }
 
         // Convert USD gas cost to token amount

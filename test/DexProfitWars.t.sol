@@ -3,8 +3,7 @@
 pragma solidity 0.8.26;
 // TODO: CHECK IF SOME IMPORTS ARE NOT NEEDED !!!
 
-import {Test} from "forge-std/Test.sol";
-import "forge-std/console.sol";
+import {Test, console} from "forge-std/Test.sol";
 
 import {Deployers} from "@uniswap/v4-core/test/utils/Deployers.sol";
 import {PoolSwapTest} from "v4-core/test/PoolSwapTest.sol";
@@ -25,6 +24,8 @@ import {LiquidityAmounts} from "@uniswap/v4-core/test/utils/LiquidityAmounts.sol
 
 import {MockV3Aggregator} from "./mocks/MockV3Aggregator.sol";
 import {DexProfitWars} from "../src/DexProfitWars.sol";
+
+// TODO: REMOVE CONSOLE.LOGS
 
 /**
  * 1. Test that gas cost calculations correctly apply both USD and percentage-based thresholds
@@ -62,6 +63,14 @@ contract DexProfitWarsTest is Test, Deployers {
     MockV3Aggregator token0UsdOracle;
     MockV3Aggregator token1UsdOracle;
 
+    int256 constant SEND_VALUE = 1e17;
+    uint256 constant ONE = 1e18;
+    uint256 constant INITIAL_LIQUIDITY = 10000e18;
+    uint256 constant SCALING_FACTOR = 1e9;
+    uint256 constant MINIMUM_PROFIT_BPS = 200; // 2% minimum profit
+    uint256 constant GAS_PRICE = 30;
+    bool constant ZERO_FOR_ONE = true; // NEEDED???
+
     function setUp() public {
         // deploy PoolManager and Router contracts
         deployFreshManagerAndRouters();
@@ -71,23 +80,23 @@ contract DexProfitWarsTest is Test, Deployers {
 
         // deploy mock price feeds (Chainlink typically uses 8 decimals)
         ethUsdOracle = new MockV3Aggregator(8, 2000e8); // ETH = $2000
-        token0UsdOracle = new MockV3Aggregator(8, 1e8); // TOKEN0 = $1
-        token1UsdOracle = new MockV3Aggregator(8, 1e8); // TOKEN1 = $1
+        token0UsdOracle = new MockV3Aggregator(8, int256(ONE)); // TOKEN0 = $1
+        token1UsdOracle = new MockV3Aggregator(8, int256(ONE)); // TOKEN1 = $1
 
-        // Deploy hook to an address that has the proper flags set
+        // deploy hook to an address with the proper flags
         uint160 flags = uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG);
         address hookAddress = address(flags);
-        //address hookAddress = address(uint160(flags | (uint160(uint256(keccak256(bytes("DexProfitWars")))) << 40)));
+
+        bytes memory constructorArgs = abi.encode(
+            address(manager),
+            address(ethUsdOracle),
+            address(token0UsdOracle),
+            address(token1UsdOracle)
+        );
 
         deployCodeTo(
             "DexProfitWars.sol",
-            abi.encode(
-                address(manager),
-                address(ethUsdOracle),
-                address(token0UsdOracle),
-                address(token1UsdOracle)
-            ),
-            0,
+            constructorArgs,
             hookAddress
         );
         hook = DexProfitWars(hookAddress);
@@ -102,79 +111,100 @@ contract DexProfitWarsTest is Test, Deployers {
             type(uint256).max
         );
 
+        // approve our tokens for spending on the swap router and modify liquidity router
+        MockERC20(Currency.unwrap(token0)).approve(address(swapRouter), type(uint256).max);
+        MockERC20(Currency.unwrap(token0)).approve(address(modifyLiquidityRouter), type(uint256).max);
+        MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), type(uint256).max);
+        MockERC20(Currency.unwrap(token1)).approve(address(modifyLiquidityRouter), type(uint256).max);
+
         // initialize the pool
         (key,) = initPool(
             token0,
             token1,
             hook, // Hook Contract
             3000, // Swap Fees
-            SQRT_PRICE_1_1 // Initial Sqrt(P) value = 1
+            SQRT_PRICE_1_2 // Initialize with token1 being worth 4x token0
         );
-    }
 
-    // to run a specific test: forge test --match-path test/DexProfitWars.t.sol --match-test test_addLiquidityAndSwap -vvv
-
-    function test_addLiquidityAndSwap() public {
-        uint256 balanceBefore = hook.balanceOf(address(this));
-
-        // set user address in hook data
+        // Add initial liquidity to the pool
         bytes memory hookData = abi.encode(address(this));
 
         uint160 sqrtPriceAtTickLower = TickMath.getSqrtPriceAtTick(-60);
         uint160 sqrtPriceAtTickUpper = TickMath.getSqrtPriceAtTick(60);
 
-        console.log("In the Test!!!");
+        // amount of liquidity being added to or removed from a specific price range
+        uint128 liquidityDelta = LiquidityAmounts.getLiquidityForAmount0(
+            sqrtPriceAtTickLower,
+            SQRT_PRICE_1_2,
+            INITIAL_LIQUIDITY
+        );
+        console.log("liquidityDelta", liquidityDelta);
+        console.log("INITIAL_LIQUIDITY", INITIAL_LIQUIDITY);
+        modifyLiquidityRouter.modifyLiquidity{value: INITIAL_LIQUIDITY}(
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: -60,
+                tickUpper: 60,
+                liquidityDelta: int256(INITIAL_LIQUIDITY),
+                salt: bytes32(0)
+            }),
+            hookData
+        );
 
-        // uint256 ethToAdd = 0.1 ether;
-        // uint128 liquidityDelta = LiquidityAmounts.getLiquidityForAmount0(sqrtPriceAtTickLower, SQRT_PRICE_1_1, ethToAdd);
-
-        // uint256 tokenToAdd =
-        //     LiquidityAmounts.getAmount1ForLiquidity(sqrtPriceAtTickLower, SQRT_PRICE_1_1, liquidityDelta);
-
-        // modifyLiquidityRouter.modifyLiquidity{value: ethToAdd}(
-        //     key,
-        //     IPoolManager.ModifyLiquidityParams({
-        //         tickLower: -60,
-        //         tickUpper: 60,
-        //         liquidityDelta: int256(uint256(liquidityDelta)),
-        //         salt: bytes32(0)
-        //     }),
-        //     hookData
-        // );
-
-        // uint256 balanceAfterAddLiquidity = hook.balanceOf(address(this));
-
-        // assertApproxEqAbs(
-        //     balanceAfterAddLiquidity - balanceBefore,
-        //     0.1 ether,
-        //     0.001 ether // error margin for precision loss
-        // );
-
-        // // Now we swap
-        // // We will swap 0.001 ether for tokens
-        // // We should get 20% of 0.001 * 10**18 points
-        // // = 2 * 10**14
-        // swapRouter.swap{value: 0.001 ether}(
-        //     key,
-        //     IPoolManager.SwapParams({
-        //         zeroForOne: true,
-        //         amountSpecified: -0.001 ether, // Exact input for output swap
-        //         sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-        //     }),
-        //     PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
-        //     hookData
-        // );
-
-        // uint256 balanceAfterSwap = hook.balanceOf(address(this));
-
-        // assertEq(balanceAfterSwap - balanceAfterAddLiquidity, 2 * 10 ** 14);
+        vm.txGasPrice(GAS_PRICE);
     }
 
+    // to run specific test: forge test --match-path test/DexProfitWars.t.sol --match-test test_calculateSwapPnL -vvv
     // Test Profit Calculation and Gas Costs
-    function test_calculateSwapPnL() public {}
+    function test_calculateSwapPnL() public {
+        bytes memory hookData = abi.encode(address(this));
+
+        // Record balances and state before swap
+        uint256 balanceBefore = token1.balanceOf(address(this));
+
+        // // set a realistic timestamp (Jan 1, 2024)
+        // vm.warp(1704067200);
+
+        // Do a swap that should be profitable
+        swapRouter.swap{value: uint256(0.01 ether)}(
+            key,
+            IPoolManager.SwapParams({
+                zeroForOne: ZERO_FOR_ONE,
+                amountSpecified: -0.01 ether,  // Exact input: spending 0.01 token0
+                sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: false,
+                settleUsingBurn: false
+            }),
+            hookData
+        );
+        console.log("block.timestamp", block.timestamp);
+        // Get trader stats after swap
+        DexProfitWars.TraderStats memory stats = hook.getTraderStats(address(this));
+
+        // Assertions
+        assertTrue(stats.totalTrades == 1, "Should record one trade");
+        assertTrue(stats.profitableTrades == 1, "Trade should be profitable");
+        assertTrue(stats.bestTradePercentage > 0, "Should record positive profit");
+        assertTrue(
+            stats.bestTradePercentage >= int256(MINIMUM_PROFIT_BPS),
+            "Profit should meet minimum threshold"
+        );
+
+        // Test that gas costs were properly factored in
+        uint256 balanceAfter = token1.balanceOf(address(this));
+        uint256 amountReceived = balanceAfter - balanceBefore;
+
+        console.log("Best trade percentage (bps)", stats.bestTradePercentage);
+        console.log("Amount received", amountReceived);
+        console.log("Profitable trades", stats.profitableTrades);
+        console.log("Total trades", stats.totalTrades);
+    }
+
     function test_abd1() public {} // Verify gas costs are correctly subtracted from profits
     function test_abd2() public {} // Test the 2% minimum profit threshold
-    function test_abd3() public {} // Test negative profit scenarios
+    function test_abd3() public {} // Test negative profit / loss scenario
 
     // Bonus Point System
     function test_calculateBonus() public {}
