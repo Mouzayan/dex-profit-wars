@@ -94,7 +94,9 @@ import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
  *         - Do we need more so[histicated price validation?
  *         - Do we need circuit breakers?
  *         - Add bonus locking period - IMPORTANT
- *         - Add Cope Trading feature
+ *         - Add Copy Trading feature
+ *         - Add events, add custom errors
+ *         - Reentrancy, CEI ??
  */
 contract DexProfitWars is BaseHook {
     using StateLibrary for IPoolManager;
@@ -126,8 +128,10 @@ contract DexProfitWars is BaseHook {
 
     // Mapping to store trader statistics
     mapping(address => TraderStats) public traderStats;
-
     mapping(address => SwapGasTracking) public swapGasTracker;
+    // Track the user's pre-swap balances
+    mapping(address => uint256) private userToken0Before;
+    mapping(address => uint256) private userToken1Before;
 
     // track reward tokens earned by each user
     mapping(address => uint256) public balanceOf;
@@ -235,12 +239,23 @@ contract DexProfitWars is BaseHook {
         PoolKey calldata key,
         IPoolManager.SwapParams calldata params,
         bytes calldata hookData
-    ) internal override returns (bytes4, BeforeSwapDelta, uint24)
+    ) internal
+      override
+      returns (bytes4, BeforeSwapDelta, uint24)
     {
-        // Get current sqrt price from pool
-        (uint160 sqrtPriceX96,,,) = manager.getSlot0(key.toId());
+        // decode the trader from hookData
+        address traderAddress = abi.decode(hookData, (address));
 
-        // Store gas usage and price data for this swap
+        // record the trader's current balances of token0 and token1
+        // We cast Currency to an ERC20 to call balanceOf
+        ERC20 erc0 = ERC20(Currency.unwrap(key.currency0));
+        ERC20 erc1 = ERC20(Currency.unwrap(key.currency1));
+
+        userToken0Before[traderAddress] = erc0.balanceOf(traderAddress);
+        userToken1Before[traderAddress] = erc1.balanceOf(traderAddress);
+
+        // store gas usage and price data for the swap
+        (uint160 sqrtPriceX96,,,) = manager.getSlot0(key.toId());
         swapGasTracker[sender] = SwapGasTracking({
             gasStart: gasleft(), // Record remaining gas
             sqrtPriceX96Before: sqrtPriceX96 // Record starting price
@@ -268,44 +283,34 @@ contract DexProfitWars is BaseHook {
         BalanceDelta delta,
         bytes calldata hookData
     ) internal override returns (bytes4, int128) {
-        // Get final price after swap completion
-        (uint160 sqrtPriceX96After,,,) = manager.getSlot0(key.toId());
-        console.log("sqrtPriceX96After", sqrtPriceX96After);
+        // Decode actual trader address from hookData
+        address traderAddress = abi.decode(hookData, (address));
 
-        // Retrieve stored gas and price data from before swap
-        SwapGasTracking memory tracking = swapGasTracker[sender];
+        // Get user's new balances and compute net changes in a helper (already defined)
+        (uint256 token0Change, uint256 token1Change) = _computeTokenChanges(traderAddress, key, params.zeroForOne);
 
-        // Calculate total gas used in swap
-        uint256 gasUsed = tracking.gasStart - gasleft();
-        console.log("gasUsed", gasUsed);
+        (
+            uint160 sqrtPriceX96After,
+            uint256 gasUsed,
+            uint256 gasPrice,
+            uint160 sqrtPriceX96Before
+        ) = _getPnLParameters(sender, key);
 
-        // Get current gas price for cost calculation
-        uint256 gasPrice = tx.gasprice;
-        console.log("gasPrice", gasPrice);
-
-        // Calculate percentage profit/loss including gas costs
-        int256 profitPercentage = _calculateSwapPnL(
-            delta,
-            tracking.sqrtPriceX96Before,
+        // Calculate profit percentage using the user balance changes and price data
+        int256 profitPercentage = _calculateSwapPnL_UserBalances(
+            token0Change,
+            token1Change,
+            sqrtPriceX96Before,
             sqrtPriceX96After,
             gasUsed,
-            gasPrice
+            gasPrice,
+            params.zeroForOne
         );
 
-        console.log("CONTRACT profitPercentage", profitPercentage);
-
-        // decode the actual trader address from hookData
-        address traderAddress = abi.decode(hookData, (address));
-        console.log("CONTRACT traderAddress", traderAddress);
-        console.log("CONTRACT sender address", sender);
-
-        // Update trader stats with the results
-        _updateTraderStats(traderAddress, delta, profitPercentage);
-
-        // Clean up gas tracking
+        // update stats for the actual trader
+        _updateTraderStats(traderAddress, profitPercentage);
         delete swapGasTracker[sender];
 
-        // Return function selector to indicate success
         return (this.afterSwap.selector, 0);
     }
 
@@ -315,14 +320,114 @@ contract DexProfitWars is BaseHook {
     }
 
     // ========================================= HELPER FUNCTIONS ========================================
+    // TODO NATSPEC
+    function _getPnLParameters(address sender, PoolKey calldata key)
+        internal
+        returns (
+            uint160 sqrtPriceX96After,
+            uint256 gasUsed,
+            uint256 gasPrice,
+            uint160 sqrtPriceX96Before
+        )
+    {
+        // Get final sqrt price after swap
+        (sqrtPriceX96After,,,) = manager.getSlot0(key.toId());
+        // Retrieve stored gas data from before swap
+        SwapGasTracking memory tracking = swapGasTracker[sender];
+        gasUsed = tracking.gasStart - gasleft();
+        gasPrice = tx.gasprice;
+        sqrtPriceX96Before = tracking.sqrtPriceX96Before;
+    }
+
+    // TODO NATSPEC
+    function _computeTokenChanges(
+        address trader,
+        PoolKey calldata key,
+        bool zeroForOne
+    ) internal view returns (uint256 token0Change, uint256 token1Change) {
+        (uint256 token0After, uint256 token1After) = _getUserBalances(trader, key);
+        uint256 token0BeforeBal = userToken0Before[trader];
+        uint256 token1BeforeBal = userToken1Before[trader];
+
+        if (zeroForOne) {
+            token0Change = token0BeforeBal > token0After ? token0BeforeBal - token0After : 0;
+            token1Change = token1After > token1BeforeBal ? token1After - token1BeforeBal : 0;
+        } else {
+            token0Change = token0After > token0BeforeBal ? token0After - token0BeforeBal : 0;
+            token1Change = token1BeforeBal > token1After ? token1BeforeBal - token1After : 0;
+        }
+    }
+
+    // TODO: add Natspec
+    function _getUserBalances(address trader, PoolKey calldata key)
+        internal
+        view
+        returns (uint256 token0Balance, uint256 token1Balance)
+    {
+        ERC20 erc0 = ERC20(Currency.unwrap(key.currency0));
+        ERC20 erc1 = ERC20(Currency.unwrap(key.currency1));
+        token0Balance = erc0.balanceOf(trader);
+        token1Balance = erc1.balanceOf(trader);
+    }
+
+    // TODO: add Natspec
+    function _calculateSwapPnL_UserBalances(
+        uint256 token0Spent,
+        uint256 token1Gained,
+        uint160 sqrtPriceX96Before,
+        uint160 sqrtPriceX96After,
+        uint256 gasUsed,
+        uint256 gasPrice,
+        bool zeroForOne
+    )
+        internal
+        returns (int256 profitPercentage)
+    {
+        // 1. Convert Q96 sqrt price to a real price
+        uint256 priceBefore = (uint256(sqrtPriceX96Before) * sqrtPriceX96Before) >> 192;
+        uint256 priceAfter  = (uint256(sqrtPriceX96After)  * sqrtPriceX96After)  >> 192;
+
+        // 2. Calculate the "value in" and "value out"
+        //    If zeroForOne, userSpent token0, gained token1
+        //    So valueIn is token0Spent * priceBefore, valueOut is token1Gained * priceAfter
+        uint256 valueIn;
+        uint256 valueOut;
+
+        if (zeroForOne) {
+            valueIn  = token0Spent * priceBefore;
+            valueOut = token1Gained * priceAfter;
+        } else {
+            // The inverse: userSpent token1, gained token0
+            // price is token1 per token0, so you might invert or handle carefully
+            // For simplicity, assume token1Spent * (1 / priceBefore)
+            // or do separate oracles for each side
+            // ...
+        }
+
+        // 3. Subtract gas cost
+        uint256 gasCostWei = gasUsed * _getGasPrice();
+        uint256 gasCostInTokens = _convertGasCostToTokens(gasCostWei, priceBefore);
+        if (valueOut <= gasCostInTokens) {
+            return -1_000_000; // -100%
+        }
+        valueOut -= gasCostInTokens;
+
+        // 4. Return final percentage
+        if (valueOut > valueIn) {
+            profitPercentage = int256(((valueOut - valueIn) * 1e6) / valueIn);
+        } else {
+            profitPercentage = -int256(((valueIn - valueOut) * 1e6) / valueIn);
+        }
+        return profitPercentage;
+    }
+
     /**
      * @notice Updates trader statistics after a profitable trade.
      *
      * @param trader                        The address of the trader.
-     * @param delta                         The balance changes from the swap.
      * @param profitPercentage              The calculated profit percentage (scaled by 1e6).
      */
-    function _updateTraderStats(address trader, BalanceDelta delta, int256 profitPercentage) internal {
+    function _updateTraderStats(address trader, int256 profitPercentage) internal {
         TraderStats storage stats = traderStats[trader];
 
         // Update trade counts
@@ -375,25 +480,35 @@ contract DexProfitWars is BaseHook {
         uint256 gasUsed,
         uint256 gasPrice
     ) internal returns (int256 profitPercentage) {
-        // Convert sqrt price to regular price
-        uint256 priceBeforeX96 = uint256(sqrtPriceX96Before) * uint256(sqrtPriceX96Before);
-        uint256 priceAfterX96 = uint256(sqrtPriceX96After) * uint256(sqrtPriceX96After);
+        // convert Q96 sqrt price to an actual price (token1/token0)
+        uint256 priceBefore = (uint256(sqrtPriceX96Before) * sqrtPriceX96Before) >> 192;
+        uint256 priceAfter = (uint256(sqrtPriceX96After)  * sqrtPriceX96After)  >> 192;
+        console.log("CONTRACT priceBefore", priceBefore);
+        console.log("CONTRACT priceAfter", priceAfter);
 
         // Get the int128 values
         int128 amount0 = delta.amount0();
         int128 amount1 = delta.amount1();
+        console.log("CONTRACT amount0", amount0);
+        console.log("CONTRACT amount1", amount1);
 
         // Get absolute values of tokens swapped
         uint256 tokenInAmount = amount0 > 0 ? uint256(uint128(amount0)) : uint256(uint128(amount1));
         uint256 tokenOutAmount = amount0 > 0 ? uint256(uint128(-amount1)) : uint256(uint128(-amount0));
+        console.log("CONTRACT tokenInAmount", tokenInAmount);
+        console.log("CONTRACT tokenOutAmount", tokenOutAmount);
 
         // Calculate values (in terms of one token)
-        uint256 valueIn = tokenInAmount * priceBeforeX96;
-        uint256 valueOut = tokenOutAmount * priceAfterX96;
+        uint256 valueIn = tokenInAmount * priceBefore;
+        uint256 valueOut = tokenOutAmount * priceAfter;
+        console.log("CONTRACT valueIn", valueIn);
+        console.log("CONTRACT valueOut", valueOut);
 
         // Calculate gas costs
         uint256 gasCostWei = gasUsed * _getGasPrice();
-        uint256 gasCostInTokens = _convertGasCostToTokens(gasCostWei, priceBeforeX96);
+        uint256 gasCostInTokens = _convertGasCostToTokens(gasCostWei, priceBefore);
+        console.log("CONTRACT gasCostWei", gasCostWei);
+        console.log("CONTRACT gasCostInTokens", gasCostInTokens);
 
         // Subtract gas costs from value out
         if (valueOut > gasCostInTokens) {
