@@ -54,24 +54,26 @@ contract DexProfitWarsTest is Test, Deployers {
     using CurrencyLibrary for Currency;
 
     // token currencies in the pool
-    Currency token0;
-    Currency token1;
+    Currency public token0;
+    Currency public token1;
 
-    DexProfitWars hook;
+    DexProfitWars public hook;
 
-    MockV3Aggregator ethUsdOracle;
-    MockV3Aggregator token0UsdOracle;
-    MockV3Aggregator token1UsdOracle;
+    MockV3Aggregator public ethUsdOracle;
+    MockV3Aggregator public token0UsdOracle;
+    MockV3Aggregator public token1UsdOracle;
 
-    int256 constant SEND_VALUE_LARGE = 1000e18;
+    address USER = makeAddr("USER");
+
+    int256 constant SEND_VALUE_LARGE = 100e18;
     int256 constant SEND_VALUE_SMALL = 1e16;
     uint256 constant ONE = 1e18;
     uint256 constant FOUR = 4e18;
     uint256 constant INITIAL_LIQUIDITY = 500e18;
-    uint256 constant SCALING_FACTOR = 1e9;
+    uint256 constant SCALING_FACTOR = 1e9; // Needed ???
     uint256 constant MINIMUM_PROFIT_BPS = 200; // 2% minimum profit
     uint256 constant GAS_PRICE = 15; // 15 gewi
-    bool constant ZERO_FOR_ONE = true; // NEEDED???
+    bool constant ZERO_FOR_ONE = true; // user trading token0 for token1
 
     function setUp() public {
         // deploy PoolManager and Router contracts
@@ -79,16 +81,16 @@ contract DexProfitWarsTest is Test, Deployers {
 
         // deploy two test tokens
         (token0, token1) = deployMintAndApprove2Currencies();
-        console.log("TEST token0.balanceOf(address(this))", token0.balanceOf(address(this)));
-        console.log("TEST token1.balanceOf(address(this))", token1.balanceOf(address(this)));
-        // approve the tokens for spending on the swap router and modify liquidity router
+
+        // approve the tokens for spending
         MockERC20(Currency.unwrap(token0)).approve(address(swapRouter), type(uint256).max);
         MockERC20(Currency.unwrap(token0)).approve(address(modifyLiquidityRouter), type(uint256).max);
         MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), type(uint256).max);
         MockERC20(Currency.unwrap(token1)).approve(address(modifyLiquidityRouter), type(uint256).max);
-        console.log("Test address(swapRouter)", address(swapRouter));
-        console.log("Test address(modifyLiquidityRouter)", address(modifyLiquidityRouter));
-        console.log("Test address(this) TEST contract", address(this));
+
+        // mint a bunch of tokens to the user
+        MockERC20(Currency.unwrap(token0)).mint(USER, 10000e18);
+        MockERC20(Currency.unwrap(token1)).mint(USER, 10000e18);
 
         // deploy mock price feeds (Chainlink typically uses 8 decimals)
         ethUsdOracle = new MockV3Aggregator(8, 2000e8); // ETH = $2000
@@ -122,20 +124,17 @@ contract DexProfitWarsTest is Test, Deployers {
             SQRT_PRICE_1_2 // initialize with token1 being worth 4x token0
         );
 
-        // Add initial liquidity to the pool
-        bytes memory hookData = abi.encode(address(this));
+        // TODO: REMOVE????
+        // add initial liquidity to the pool REMOVE????
+        //uint160 sqrtPriceAtTickLower = TickMath.getSqrtPriceAtTick(-60);
+        //uint160 sqrtPriceAtTickUpper = TickMath.getSqrtPriceAtTick(60);
+        // uint128 liquidityDelta = LiquidityAmounts.getLiquidityForAmount0(
+        //     sqrtPriceAtTickLower,
+        //     SQRT_PRICE_1_2,
+        //     INITIAL_LIQUIDITY
+        // );
 
-        uint160 sqrtPriceAtTickLower = TickMath.getSqrtPriceAtTick(-60);
-        uint160 sqrtPriceAtTickUpper = TickMath.getSqrtPriceAtTick(60);
-
-        // amount of liquidity being added to or removed from a specific price range
-        uint128 liquidityDelta = LiquidityAmounts.getLiquidityForAmount0(
-            sqrtPriceAtTickLower,
-            SQRT_PRICE_1_2,
-            INITIAL_LIQUIDITY
-        );
-        console.log("TEST liquidityDelta", liquidityDelta);
-        console.log("TEST INITIAL_LIQUIDITY", INITIAL_LIQUIDITY);
+        // add initial liquidity to the pool
         modifyLiquidityRouter.modifyLiquidity{value: INITIAL_LIQUIDITY}(
             key,
             IPoolManager.ModifyLiquidityParams({
@@ -144,19 +143,49 @@ contract DexProfitWarsTest is Test, Deployers {
                 liquidityDelta: int256(INITIAL_LIQUIDITY),
                 salt: bytes32(0)
             }),
-            hookData
+            ""
         );
 
         vm.txGasPrice(GAS_PRICE);
     }
 
+    function test_makeTrade() public {
+        vm.startPrank(USER);
+
+        // approve tokens
+        MockERC20(Currency.unwrap(token0)).approve(address(manager), type(uint256).max);
+        MockERC20(Currency.unwrap(token1)).approve(address(manager), type(uint256).max);
+        MockERC20(Currency.unwrap(token0)).approve(address(hook), type(uint256).max);
+        MockERC20(Currency.unwrap(token1)).approve(address(hook), type(uint256).max);
+
+        // user's token0 balance before the trade
+        uint256 userToken0BalanceBefore = token0.balanceOf(USER);
+
+        // since ZERO_FOR_ONE is true, it will pull token0 from the user
+        hook.makeTrade(key, -50, true, uint256(SEND_VALUE_LARGE));
+
+        // verify that the user's token0 balance decreased by SEND_VALUE_LARGE
+        uint256 userToken0BalanceAfter = token0.balanceOf(USER);
+        assertEq(int256(userToken0BalanceBefore) - int256(userToken0BalanceAfter), SEND_VALUE_LARGE);
+
+        // verify that the hook contract now holds the input tokens
+        uint256 hookToken0Balance = MockERC20(Currency.unwrap(key.currency0)).balanceOf(address(hook));
+        assertEq(int256(hookToken0Balance), SEND_VALUE_LARGE);
+    }
+
     // to run specific test: forge test --match-path test/DexProfitWars.t.sol --match-test test_calculateSwapPnL_Unprofitable -vvv
     // Test Profit Calculation and Gas Costs
     function test_calculateSwapPnL_Loss() public {
-        bytes memory hookData = abi.encode(address(this));
+        console.log("!!! TEST calculateSwapPnL_Loss");
+        vm.prank(USER);
+        uint256 userToken0Before = token0.balanceOf(USER);
+        uint256 userToken1Before = token1.balanceOf(USER);
 
-        // Record balances and state before swap
-        uint256 balanceBefore = token1.balanceOf(address(this));
+        bytes memory hookData = abi.encode(
+            USER,
+            userToken0Before,
+            userToken1Before
+        );
 
         // Do a swap that should be profitable
         swapRouter.swap(
@@ -172,10 +201,11 @@ contract DexProfitWarsTest is Test, Deployers {
             }),
             hookData
         );
+        console.log("!!! TEST token0 balance of TEST AFTER:", token0.balanceOf(USER));
+        console.log("!!! TEST token1 balance of TEST AFTER:", token1.balanceOf(USER));
         console.log("TEST block.timestamp", block.timestamp);
         // Get trader stats after swap
-        DexProfitWars.TraderStats memory stats = hook.getTraderStats(address(this));
-        console.log("TEST address(this)", address(this));
+        DexProfitWars.TraderStats memory stats = hook.getTraderStats(USER);
         console.log("TEST totalTrades", stats.totalTrades);
         console.log("TEST Best trade percentage (bps)", stats.bestTradePercentage);
         console.log("TEST Profitable trades", stats.profitableTrades);
@@ -192,36 +222,46 @@ contract DexProfitWarsTest is Test, Deployers {
         );
 
         // Test that gas costs were properly factored in
-        uint256 balanceAfter = token1.balanceOf(address(this));
-        uint256 amountReceived = balanceAfter - balanceBefore;
+        uint256 balanceAfter = token1.balanceOf(USER);
+        uint256 amountReceived = balanceAfter - userToken1Before;
         console.log("TEST Amount received", amountReceived);
     }
 
     // forge test --match-path test/DexProfitWars.t.sol --match-test test_calculateSwapPnL_Profitable -vvv
     function test_calculateSwapPnL_Profit() public {
-        bytes memory hookData = abi.encode(address(this));
+        console.log("!!! TEST Contract ADDRESS", address(this));
+        console.log("!!! TEST calculateSwapPnL_PROFIT");
 
-        // Record balances and state before swap
-        uint256 balanceBefore = token1.balanceOf(address(this));
+        vm.startPrank(USER);
+        // approve tokens
+        MockERC20(Currency.unwrap(token0)).approve(address(manager), type(uint256).max);
+        MockERC20(Currency.unwrap(token1)).approve(address(manager), type(uint256).max);
+        MockERC20(Currency.unwrap(token0)).approve(address(hook), type(uint256).max);
+        MockERC20(Currency.unwrap(token1)).approve(address(hook), type(uint256).max);
 
-        // Do a swap that should be profitable
-        swapRouter.swap(
-            key,
-            IPoolManager.SwapParams({
-                zeroForOne: ZERO_FOR_ONE,
-                amountSpecified: -SEND_VALUE_LARGE,  // Exact input: spending 0.1 token0
-                sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-            }),
-            PoolSwapTest.TestSettings({
-                takeClaims: false,
-                settleUsingBurn: false
-            }),
-            hookData
+        uint256 userToken0Before = token0.balanceOf(USER);
+        uint256 userToken1Before = token1.balanceOf(USER);
+
+        bytes memory hookData = abi.encode(
+            USER,
+            userToken0Before,
+            userToken1Before
         );
+
+        hook.makeTrade(key, -50, true, uint256(SEND_VALUE_LARGE));
+
+        vm.stopPrank();
+        // Verify the swap worked
+        assertLt(token0.balanceOf(USER), userToken0Before, "User should have spent token0");
+        assertGt(token1.balanceOf(USER), userToken1Before, "User should have received token1");
+
         console.log("TEST block.timestamp", block.timestamp);
+
+        console.log("!!! TEST token0 balance of TEST AFTER:", token0.balanceOf(USER));
+        console.log("!!! TEST token1 balance of TEST AFTER:", token1.balanceOf(USER));
         // Get trader stats after swap
-        DexProfitWars.TraderStats memory stats = hook.getTraderStats(address(this));
-        console.log("TEST address(this)", address(this));
+        DexProfitWars.TraderStats memory stats = hook.getTraderStats(USER);
+        console.log("TEST USER", USER);
         console.log("TEST totalTrades", stats.totalTrades);
         console.log("TEST Best trade percentage (bps)", stats.bestTradePercentage);
         console.log("TEST Profitable trades", stats.profitableTrades);
@@ -237,9 +277,12 @@ contract DexProfitWarsTest is Test, Deployers {
             "Profit should not meet minimum threshold"
         );
 
-        // Test that gas costs were properly factored in
-        uint256 balanceAfter = token1.balanceOf(address(this));
-        uint256 amountReceived = balanceAfter - balanceBefore;
+        uint256 userToken0After = token0.balanceOf(USER);
+        assertLt(userToken0After, userToken0Before, "User should have spent token0");
+
+        uint256 balanceAfter = token1.balanceOf(USER);
+        uint256 amountReceived = balanceAfter - userToken1Before;
+        console.log("TEST token1 balanceAfter", balanceAfter);
         console.log("TEST Amount received", amountReceived);
     }
 

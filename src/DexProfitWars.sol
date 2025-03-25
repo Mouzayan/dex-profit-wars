@@ -3,6 +3,7 @@ pragma solidity 0.8.26;
 import {console} from "forge-std/Test.sol"; // REMOVE
 import {BaseHook} from "v4-periphery/src/utils/BaseHook.sol";
 import {ERC20} from "solmate/src/tokens/ERC20.sol"; // Is THIS NEEDED ????
+import {IERC20} from "forge-std/interfaces/IERC20.sol";
 import {AggregatorV3Interface} from "chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
 import {CurrencyLibrary, Currency} from "v4-core/types/Currency.sol";
@@ -100,7 +101,6 @@ import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
  */
 contract DexProfitWars is BaseHook {
     using StateLibrary for IPoolManager;
-    using StateLibrary for IPoolManager;
     using CurrencyLibrary for Currency; // needed ???
     using BalanceDeltaLibrary for BalanceDelta; // needed ???
 
@@ -129,10 +129,6 @@ contract DexProfitWars is BaseHook {
     // Mapping to store trader statistics
     mapping(address => TraderStats) public traderStats;
     mapping(address => SwapGasTracking) public swapGasTracker;
-    // Track the user's pre-swap balances
-    mapping(address => uint256) private userToken0Before;
-    mapping(address => uint256) private userToken1Before;
-
     // track reward tokens earned by each user
     mapping(address => uint256) public balanceOf;
 
@@ -168,12 +164,12 @@ contract DexProfitWars is BaseHook {
 
     IPoolManager manager;
 
+    // ============================================= ERRORS =============================================
     // Create separate errors file
     error DPW_StalePrice(uint256 timestamp);
     error DPW_InvalidPrice(int256 price);
 
     // ========================================== CONSTRUCTOR ===========================================
-
     /**
      * @notice Sets up the DexProfitWars contract by initializing the pool manager and price oracles,
      *         and storing their decimal precision values.
@@ -198,6 +194,7 @@ contract DexProfitWars is BaseHook {
         token1UsdDecimals = token1UsdOracle.decimals(); // Stores Token1/USD feed decimal precision
     }
 
+    // ========================================= HOOK PERMISSIONS =========================================
     /**
      * @notice Returns the hook's permissions for various Uniswap V4 pool operations.
      *         This hook requires permissions for beforeSwap, afterSwap, and afterAddLiquidity
@@ -224,6 +221,39 @@ contract DexProfitWars is BaseHook {
         });
     }
 
+    /** // TODO: FIX Natspec
+     * @notice Allows a user to make a trade by sending tokens to the hook.
+     *         The function pulls the user's tokens using transferFrom.
+     *
+     * @param key                           The pool key for the swap
+     * @param tickToSellAt                  The tick at which the user wishes to sell
+     * @param zeroForOne                    If true, user is selling currency0 for currency1; otherwise vice versa
+     * @param inputAmount                   The amount of tokens the user is depositing
+     *
+     * @return tick                         The rounded tick at which the order is recorded
+     */
+    function makeTrade(
+        PoolKey calldata key,
+        int24 tickToSellAt,
+        bool zeroForOne,
+        uint256 inputAmount
+    ) external returns (int24) {
+        // round the requested tick down to the nearest multiple of tickSpacing
+        int24 tick = getLowerUsableTick(tickToSellAt, key.tickSpacing);
+
+        // determine which token is being sold
+        address sellToken = zeroForOne
+            ? Currency.unwrap(key.currency0)
+            : Currency.unwrap(key.currency1);
+
+        // pull funds from the user to this contract
+        // user must have approved this beforehand
+        IERC20(sellToken).transferFrom(msg.sender, address(this), inputAmount);
+
+        return tick;
+    }
+
+    // TODO: MOVE TO INTERNAL FUNCTIONS
     /**
      * @notice Records the initial state before a swap occurs, including gas usage and price.
      *         This data is used to calculate profit/loss and gas costs in afterSwap.
@@ -243,16 +273,16 @@ contract DexProfitWars is BaseHook {
       override
       returns (bytes4, BeforeSwapDelta, uint24)
     {
-        // decode the trader from hookData
-        address traderAddress = abi.decode(hookData, (address));
+        console.log("CONTRACT ENTERED BS");
 
-        // record the trader's current balances of token0 and token1
-        // We cast Currency to an ERC20 to call balanceOf
-        ERC20 erc0 = ERC20(Currency.unwrap(key.currency0));
-        ERC20 erc1 = ERC20(Currency.unwrap(key.currency1));
-
-        userToken0Before[traderAddress] = erc0.balanceOf(traderAddress);
-        userToken1Before[traderAddress] = erc1.balanceOf(traderAddress);
+        // Decode the trader and initial balances from hookData
+        (
+            address trader,
+            uint256 token0Before,
+            uint256 token1Before
+        ) = abi.decode(hookData, (address, uint256, uint256));
+        console.log("CONTRACT BS token0Before", token0Before);
+        console.log("CONTRACT BS token1Before", token1Before);
 
         // store gas usage and price data for the swap
         (uint160 sqrtPriceX96,,,) = manager.getSlot0(key.toId());
@@ -264,9 +294,14 @@ contract DexProfitWars is BaseHook {
         return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, key.fee);
     }
 
+    // TODO: MOVE TO INTERNAL FUNCTIONS
     /**
      * @notice Calculates the profit/loss after a swap completes, including gas costs,
      *         and updates trader statistics if profit threshold is met.
+     *         The _afterSwap hook is called by the PoolManager after a swap completes.
+     *         It instructs the PoolManager to transfer the output tokens to this hook contract.
+     *
+     * @dev This function is only callable by the PoolManager.
      *
      * @param sender                        The address that initiated the swap.
      * @param key                           The pool key containing token pair and fee information.
@@ -282,13 +317,43 @@ contract DexProfitWars is BaseHook {
         IPoolManager.SwapParams calldata params,
         BalanceDelta delta,
         bytes calldata hookData
-    ) internal override returns (bytes4, int128) {
-        // Decode actual trader address from hookData
-        address traderAddress = abi.decode(hookData, (address));
+    ) internal
+      override
+      onlyPoolManager
+      returns (bytes4, int128)
+    {
+        // decode the user address and before txn balances
+        (
+            address traderAddress,
+            uint256 token0BeforeBal,
+            uint256 token1BeforeBal
+        ) = abi.decode(hookData, (address, uint256, uint256));
+        console.log("CONTRACT AFTERSWAP: traderAddress", traderAddress);
+        console.log("CONTRACT AFTERSWAP: token0BeforeBal", token0BeforeBal);
+        console.log("CONTRACT AFTERSWAP: token1BeforeBal", token1BeforeBal);
 
-        // Get user's new balances and compute net changes in a helper (already defined)
-        (uint256 token0Change, uint256 token1Change) = _computeTokenChanges(traderAddress, key, params.zeroForOne);
+        if (params.zeroForOne && delta.amount1() > 0) {
+            uint128 amountOut = uint128(delta.amount1());
+            // manager to take currency1 from its reserves and send it to this contract
+            manager.take(key.currency1, address(this), amountOut);
+        } else if (!params.zeroForOne && delta.amount0() > 0) {
+            uint128 amountOut = uint128(delta.amount0());
+            // if opposite swap direction, take currency0
+            manager.take(key.currency0, address(this), amountOut);
+        }
 
+        // Compute how much trader actually spent/received
+        (uint256 token0Change, uint256 token1Change) = _computeTokenChanges(
+            traderAddress,
+            key,
+            params.zeroForOne,
+            token0BeforeBal,
+            token1BeforeBal
+        );
+        console.log("CONTRACT AS token0Change", token1Change);
+        console.log("CONTRACT AS token1Change", token1Change);
+
+        // retrieve gas usage
         (
             uint160 sqrtPriceX96After,
             uint256 gasUsed,
@@ -296,7 +361,7 @@ contract DexProfitWars is BaseHook {
             uint160 sqrtPriceX96Before
         ) = _getPnLParameters(sender, key);
 
-        // Calculate profit percentage using the user balance changes and price data
+        // calculate profit percentage
         int256 profitPercentage = _calculateSwapPnL_UserBalances(
             token0Change,
             token1Change,
@@ -306,11 +371,12 @@ contract DexProfitWars is BaseHook {
             gasPrice,
             params.zeroForOne
         );
+        //console.log("CONTRACT AS profitPercentage", profitPercentage);
 
         // update stats for the actual trader
         _updateTraderStats(traderAddress, profitPercentage);
-        delete swapGasTracker[sender];
 
+        delete swapGasTracker[sender];
         return (this.afterSwap.selector, 0);
     }
 
@@ -330,7 +396,6 @@ contract DexProfitWars is BaseHook {
             uint160 sqrtPriceX96Before
         )
     {
-        // Get final sqrt price after swap
         (sqrtPriceX96After,,,) = manager.getSlot0(key.toId());
         // Retrieve stored gas data from before swap
         SwapGasTracking memory tracking = swapGasTracker[sender];
@@ -343,18 +408,48 @@ contract DexProfitWars is BaseHook {
     function _computeTokenChanges(
         address trader,
         PoolKey calldata key,
-        bool zeroForOne
-    ) internal view returns (uint256 token0Change, uint256 token1Change) {
-        (uint256 token0After, uint256 token1After) = _getUserBalances(trader, key);
-        uint256 token0BeforeBal = userToken0Before[trader];
-        uint256 token1BeforeBal = userToken1Before[trader];
+        bool zeroForOne,
+        uint256 token0BeforeBal,
+        uint256 token1BeforeBal
+    ) internal
+      view
+      returns (uint256 token0Change, uint256 token1Change)
+    {
+        ERC20 erc0 = ERC20(Currency.unwrap(key.currency0));
+        ERC20 erc1 = ERC20(Currency.unwrap(key.currency1));
 
+        console.log("CONTRACT COMPUTE TOKEN CHANGES token0BeforeBal,", token0BeforeBal);
+        console.log("CONTRACT COMPUTE TOKEN CHANGES token1BeforeBal", token1BeforeBal);
+
+        uint256 token0After = erc0.balanceOf(trader);
+        uint256 token1After = erc1.balanceOf(trader);
+        console.log("CONTRACT COMPUTE TOKEN CHANGES token0After", token0After);
+        console.log("CONTRACT COMPUTE TOKEN CHANGES token1After", token1After);
+
+        // compute how many tokens the user actually spent / gained
         if (zeroForOne) {
-            token0Change = token0BeforeBal > token0After ? token0BeforeBal - token0After : 0;
-            token1Change = token1After > token1BeforeBal ? token1After - token1BeforeBal : 0;
+            // user spent token0, gained token1
+            token0Change = (token0BeforeBal > token0After) ? (token0BeforeBal - token0After) : 0;
+            token1Change = (token1After > token1BeforeBal) ? (token1After - token1BeforeBal) : 0;
         } else {
-            token0Change = token0After > token0BeforeBal ? token0After - token0BeforeBal : 0;
-            token1Change = token1BeforeBal > token1After ? token1BeforeBal - token1After : 0;
+            // user spent token1, gained token0
+            token0Change = (token0After > token0BeforeBal) ? (token0After - token0BeforeBal) : 0;
+            token1Change = (token1BeforeBal > token1After) ? (token1BeforeBal - token1After) : 0;
+        }
+
+        // logs to show smaller deltas ***
+        // e.g. scaled by 1e18 for readability if tokens have 18 decimals
+        if (token0Change > 0) {
+            console.log(
+                "DexProfitWars: token0Spent (scaled) =",
+                token0Change / 1e18
+            );
+        }
+        if (token1Change > 0) {
+            console.log(
+                "DexProfitWars: token1Spent (scaled) =",
+                token1Change / 1e18
+            );
         }
     }
 
@@ -366,6 +461,7 @@ contract DexProfitWars is BaseHook {
     {
         ERC20 erc0 = ERC20(Currency.unwrap(key.currency0));
         ERC20 erc1 = ERC20(Currency.unwrap(key.currency1));
+
         token0Balance = erc0.balanceOf(trader);
         token1Balance = erc1.balanceOf(trader);
     }
@@ -418,6 +514,7 @@ contract DexProfitWars is BaseHook {
         } else {
             profitPercentage = -int256(((valueIn - valueOut) * 1e6) / valueIn);
         }
+        console.log("CONTRACT profitPercentage", profitPercentage);
         return profitPercentage;
     }
 
@@ -702,5 +799,19 @@ contract DexProfitWars is BaseHook {
         if (normalizedPrice == 0) revert DPW_InvalidPrice(price);
 
         return normalizedPrice;
+    }
+
+    /**
+     * @notice Helper function to round a tick down to the nearest usable tick.
+     *
+     * @param tick                         The original tick value.
+     * @param tickSpacing                  The tick spacing for the pool.
+     *
+     * @return                             The rounded-down tick.
+    */
+    function getLowerUsableTick(int24 tick, int24 tickSpacing) public pure returns (int24) {
+        int24 intervals = tick / tickSpacing;
+        if (tick < 0 && tick % tickSpacing != 0) intervals--; // round toward negative infinity
+        return intervals * tickSpacing;
     }
 }
