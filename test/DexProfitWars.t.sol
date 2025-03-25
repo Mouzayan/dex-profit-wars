@@ -153,6 +153,8 @@ contract DexProfitWarsTest is Test, Deployers {
         vm.startPrank(USER);
 
         // approve tokens
+        MockERC20(Currency.unwrap(token0)).approve(address(swapRouter), type(uint256).max);
+        MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), type(uint256).max);
         MockERC20(Currency.unwrap(token0)).approve(address(manager), type(uint256).max);
         MockERC20(Currency.unwrap(token1)).approve(address(manager), type(uint256).max);
         MockERC20(Currency.unwrap(token0)).approve(address(hook), type(uint256).max);

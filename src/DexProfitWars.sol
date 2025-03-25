@@ -14,6 +14,7 @@ import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
 
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 import {IHooks} from "v4-core/interfaces/IHooks.sol";
+import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 
 import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
 import {TickMath} from "v4-core/libraries/TickMath.sol";
@@ -230,25 +231,88 @@ contract DexProfitWars is BaseHook {
      * @param zeroForOne                    If true, user is selling currency0 for currency1; otherwise vice versa
      * @param inputAmount                   The amount of tokens the user is depositing
      *
-     * @return tick                         The rounded tick at which the order is recorded
+     * @return BalanceDelta                 TODO
      */
+    // function makeTrade(
+    //     PoolKey calldata key,
+    //     int24 tickToSellAt,
+    //     bool zeroForOne,
+    //     uint256 inputAmount
+    // ) external returns (BalanceDelta)  { // DO we need to return anything?
+    //     // round the requested tick down to the nearest multiple of tickSpacing
+    //     int24 tick = getLowerUsableTick(tickToSellAt, key.tickSpacing);
+
+    //     // construct hookData
+    //     bytes memory hookData = abi.encode(
+    //         msg.sender,
+    //         IERC20(Currency.unwrap(key.currency0)).balanceOf(msg.sender),
+    //         IERC20(Currency.unwrap(key.currency1)).balanceOf(msg.sender)
+    //     );
+    //     console.log("CONTRACT MKTR msg.sender", msg.sender);
+    //     console.log("CONTRACT MKTR currency0 balance", IERC20(Currency.unwrap(key.currency0)).balanceOf(msg.sender));
+    //     console.log("CONTRACT MKTRcurrency1 balance", IERC20(Currency.unwrap(key.currency0)).balanceOf(msg.sender));
+
+    //     // determine which token is being sold
+    //     address sellToken = zeroForOne
+    //         ? Currency.unwrap(key.currency0)
+    //         : Currency.unwrap(key.currency1);
+
+    //     // pull funds from the user to this contract
+    //     // user must have approved this beforehand
+    //     IERC20(sellToken).transferFrom(msg.sender, address(this), inputAmount);
+
+    //     BalanceDelta delta = _executeSwap(key, tick, zeroForOne, inputAmount, hookData);
+    // }
     function makeTrade(
-        PoolKey calldata key,
-        int24 tickToSellAt,
-        bool zeroForOne,
-        uint256 inputAmount
+    PoolKey calldata key,
+    int24 tickToSellAt,
+    bool zeroForOne,
+    uint256 inputAmount
     ) external returns (int24) {
-        // round the requested tick down to the nearest multiple of tickSpacing
         int24 tick = getLowerUsableTick(tickToSellAt, key.tickSpacing);
 
+        // construct hookData
+        bytes memory hookData = abi.encode(
+            msg.sender,
+            IERC20(Currency.unwrap(key.currency0)).balanceOf(msg.sender),
+            IERC20(Currency.unwrap(key.currency1)).balanceOf(msg.sender)
+        );
+
         // determine which token is being sold
-        address sellToken = zeroForOne
-            ? Currency.unwrap(key.currency0)
-            : Currency.unwrap(key.currency1);
+        Currency currencyIn = zeroForOne ? key.currency1 : key.currency0;
+        address sellToken = Currency.unwrap(currencyIn);
 
         // pull funds from the user to this contract
         // user must have approved this beforehand
         IERC20(sellToken).transferFrom(msg.sender, address(this), inputAmount);
+
+        // settle input tokens
+        _settle(currencyIn, uint128(inputAmount));
+
+        // perform the swap
+        BalanceDelta delta = manager.swap(
+            key,
+            IPoolManager.SwapParams({
+                zeroForOne: zeroForOne,
+                amountSpecified: -int256(inputAmount),
+                sqrtPriceLimitX96: zeroForOne
+                    ? TickMath.MIN_SQRT_PRICE + 1
+                    : TickMath.MAX_SQRT_PRICE - 1
+            }),
+            hookData
+        );
+
+        // handle output tokens
+        Currency currencyOut = zeroForOne ? key.currency1 : key.currency0;
+        if (zeroForOne) {
+            if (delta.amount1() > 0) {
+                _take(currencyOut, uint128(delta.amount1()));
+            }
+        } else {
+            if (delta.amount0() > 0) {
+                _take(currencyOut, uint128(delta.amount0()));
+            }
+        }
 
         return tick;
     }
@@ -813,5 +877,19 @@ contract DexProfitWars is BaseHook {
         int24 intervals = tick / tickSpacing;
         if (tick < 0 && tick % tickSpacing != 0) intervals--; // round toward negative infinity
         return intervals * tickSpacing;
+    }
+
+    // TODO NATSPEC
+    function _settle(Currency currency, uint128 amount) internal {
+        // transfer tokens to PM and let it know
+        poolManager.sync(currency);
+        currency.transfer(address(poolManager), amount);
+        poolManager.settle();
+    }
+
+    // TODO NATSPEC
+    function _take(Currency currency, uint128 amount) internal {
+        // take tokens out of PM to our hook contract
+        poolManager.take(currency, address(this), amount);
     }
 }
