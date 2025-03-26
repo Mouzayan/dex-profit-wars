@@ -123,11 +123,8 @@ contract DexProfitWars is BaseHook {
         uint256 lastTradeTimestamp;
     }
 
-    // the snapshot from _beforeSwap to trader address
-    mapping(address => uint256) public snapshotToken0;
-    mapping(address => uint256) public snapshotToken1;
+    // the gas snapshot from _beforeSwap
     mapping(address => uint256) public snapshotGas;
-
     mapping(address => TraderStats) public traderStats;
 
     // struct SwapGasTracking {
@@ -164,11 +161,14 @@ contract DexProfitWars is BaseHook {
     // AggregatorV3Interface public ethUsdOracle;
     // AggregatorV3Interface public token0UsdOracle;
     // AggregatorV3Interface public token1UsdOracle;
+    AggregatorV3Interface public gasPriceOracle;
+
 
     // // Oracle decimals
     // uint8 private immutable ethUsdDecimals;
     // uint8 private immutable token0UsdDecimals;
     // uint8 private immutable token1UsdDecimals;
+    uint8 private immutable gasPriceOracleDecimals;
 
     IPoolManager manager;
 
@@ -178,7 +178,7 @@ contract DexProfitWars is BaseHook {
     // error DPW_InvalidPrice(int256 price);
 
     // ========================================== CONSTRUCTOR ===========================================
-    // /**
+    // /** FOX NATSPEC
     //  * @notice Sets up the DexProfitWars contract by initializing the pool manager and price oracles,
     //  *         and storing their decimal precision values.
     //  *
@@ -190,10 +190,13 @@ contract DexProfitWars is BaseHook {
     // constructor(IPoolManager _manager, address _ethUsdOracle, address _token0UsdOracle, address _token1UsdOracle)
     //     BaseHook(_manager)
     // {
-    constructor(IPoolManager _manager)
+    constructor(IPoolManager _manager, address _gasPriceOracle)
         BaseHook(_manager)
     {
         manager = _manager;
+
+        gasPriceOracle = AggregatorV3Interface(_gasPriceOracle);
+        gasPriceOracleDecimals = gasPriceOracle.decimals();
         // Initialize price feed interfaces
         // ethUsdOracle = AggregatorV3Interface(_ethUsdOracle); // Creates interface to ETH/USD price feed
         // token0UsdOracle = AggregatorV3Interface(_token0UsdOracle); // Creates interface to Token0/USD price feed
@@ -222,7 +225,7 @@ contract DexProfitWars is BaseHook {
             afterAddLiquidity: false,
             afterRemoveLiquidity: false,
             beforeSwap: true, // record snapshot data
-            afterSwap: true, // compute PnL
+            afterSwap: true, // compute PnL swapDelta and gas cost from oracle
             beforeDonate: false,
             afterDonate: false,
             beforeSwapReturnDelta: false,
@@ -233,7 +236,7 @@ contract DexProfitWars is BaseHook {
     }
 
     // TODO: MOVE TO INTERNAL FUNCTIONS
-    /** _beforeSwap records the trader’s pre-swap token balances and gas.
+    /** _beforeSwap records the trader’s pre-swap gas balance. FIX NATSPEc
      * @notice Before-swap hook: record the price and gas usage so we can do PnL calculations later.
      * In _beforeSwap, we record the trader's initial token balances and the gas left.
      */
@@ -257,41 +260,15 @@ contract DexProfitWars is BaseHook {
       onlyPoolManager
       returns (bytes4, BeforeSwapDelta, uint24)
     {
-        console.log("CONTRACT ENTERED BS");
-
-        // Decode hookData that the caller provided.
-        // Expect hookData = abi.encode(trader)
+        // decode hookData
         address trader = abi.decode(hookData, (address));
-
-        // Record the trader's balances _before_ the swap.
-        snapshotToken0[trader] = IERC20(Currency.unwrap(key.currency0)).balanceOf(trader);
-        snapshotToken1[trader] = IERC20(Currency.unwrap(key.currency1)).balanceOf(trader);
         snapshotGas[trader] = gasleft();
 
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, key.fee);
-
-        // // Decode the trader and initial balances from hookData
-        // (
-        //     address trader,
-        //     uint256 token0Before,
-        //     uint256 token1Before
-        // ) = abi.decode(hookData, (address, uint256, uint256));
-        // console.log("CONTRACT BS token0Before", token0Before);
-        // console.log("CONTRACT BS token1Before", token1Before);
-        // console.log("CONTRACT BS trader", trader);
-
-        // // store gas usage and price data for the swap
-        // (uint160 sqrtPriceX96,,,) = manager.getSlot0(key.toId());
-        // swapGasTracker[sender] = SwapGasTracking({
-        //     gasStart: gasleft(), // Record remaining gas
-        //     sqrtPriceX96Before: sqrtPriceX96 // Record starting price
-        // });
-
-        // return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, key.fee);
     }
 
     // TODO: MOVE TO INTERNAL FUNCTIONS
-    /**
+    /** Compute PnL using the swapDelta and gas cost from the Chainlink oracle.
      * @notice After-swap hook: do PnL logic and update user stats. No token settlement here anymore.
      * In _afterSwap, we compute how much the trader's balances changed.
 
@@ -318,62 +295,83 @@ contract DexProfitWars is BaseHook {
         bytes calldata hookData
     ) internal
       override
+      onlyPoolManager
       returns (bytes4, int128)
     {
-        // Decode hookData to get the trader.
+        // decode hookData to get the trader
         (address trader) = abi.decode(hookData, (address));
 
-        // Query the trader's balances _after_ the swap.
-        uint256 token0After = IERC20(Currency.unwrap(key.currency0)).balanceOf(trader);
-        uint256 token1After = IERC20(Currency.unwrap(key.currency1)).balanceOf(trader);
-
-        // Retrieve the snapshots.
-        uint256 token0Before = snapshotToken0[trader];
-        uint256 token1Before = snapshotToken1[trader];
+        // retrieve gas snapshot from _beforeSwap
         uint256 gasBefore = snapshotGas[trader];
-        uint256 gasUsed = gasBefore - gasleft();
-        uint256 gasPrice = tx.gasprice;
+        uint256 gasUsed = gasBefore > gasleft() ? (gasBefore - gasleft()) : 0;
+        // get the average gas price from the oracle.
+        uint256 avgGasPrice = _getAverageGasPrice();
 
-        // Calculate effective token changes.
-        // For example, if the trader is swapping token0 for token1:
-        // They will lose some token0 and gain some token1.
-        uint256 token0Spent = token0Before > token0After ? (token0Before - token0After) : 0;
-        uint256 token1Gained = token1After > token1Before ? (token1After - token1Before) : 0;
+        // parse the swapDelta amounts
+        //    amount0 < 0 => user is paying token0
+        //    amount1 > 0 => user is receiving token1
+        int128 amt0 = delta.amount0();
+        int128 amt1 = delta.amount1();
+        console.log("CONTRACT AS amt0 ------------------------", amt0);
+        console.log("CONTRACT AS amt1------------------------", amt1);
 
-        // Compute the “value” of tokens spent and received.
-        // (For simplicity, assume token amounts represent value in same units; otherwise use price conversion.)
-        // In a production contract you’d likely incorporate price oracle data here.
-        // For illustration, let’s say:
-        uint256 valueIn = token0Spent;
-        uint256 valueOut = token1Gained;
+        // for zeroForOne: user is spending token0, receiving token1
+        // for !zeroForOne: user is spending token1, receiving token0
+        uint256 tokensSpent;
+        uint256 tokensGained;
 
-        // Estimate gas cost in terms of token0 (again, you’d convert using a price oracle)
-        uint256 gasCost = gasUsed * gasPrice;  // This is in wei; conversion to token units is needed in a real implementation
+        if (params.zeroForOne) {
+            // userSpent = negative of amt0 if amt0 < 0
+            tokensSpent = amt0 < 0 ? uint256(uint128(-amt0)) : 0;
+            tokensGained = amt1 > 0 ? uint256(uint128(amt1)) : 0;
+        } else {
+            // userSpent = negative of amt1 if amt1 < 0
+            tokensSpent = amt1 < 0 ? uint256(uint128(-amt1)) : 0;
+            tokensGained = amt0 > 0 ? uint256(uint128(amt0)) : 0;
+        }
 
-        // int256 profitPercentage;
-        // if (valueOut > valueIn + gasCost) {
-        //     profitPercentage = int256(((valueOut - valueIn - gasCost) * 1e6) / valueIn);
-        // } else {
-        //     profitPercentage = -int256(((valueIn + gasCost - valueOut) * 1e6) / valueIn);
-        // }
+        // compute “valueIn” vs. “valueOut” for a basic PnL calculation
+        //    (In production, you’d convert tokensSpent/tokensGained to a common unit with an oracle.) TODO!!!!!! HERE !!!!
+        uint256 valueIn  = tokensSpent;
+        uint256 valueOut = tokensGained;
+        console.log("CONTRACT AS valueIn ------------------------", valueIn);
+        console.log("CONTRACT AS valueOut ------------------------", valueOut);
 
-        // // Update trader stats (you can add your own bonus calculations, etc.)
-        // TraderStats storage stats = traderStats[trader];
-        // stats.totalTrades++;
-        // if (profitPercentage > 0) {
-        //     stats.profitableTrades++;
-        //     if (profitPercentage > stats.bestTradePercentage) {
-        //         stats.bestTradePercentage = profitPercentage;
-        //     }
-        // }
-        //stats.lastTradeTimestamp = block.timestamp;
+        // subtract gas cost from valueOut to get net PnL
+        uint256 gasCostWei = gasUsed * avgGasPrice;
+        // For demonstration, we just treat gasCostWei as if it's the same unit as tokenSpent, which is not realistic.
+        // In real code, you'd do a price oracle conversion from ETH → token0 or token1. TODO!!!!!! HERE !!!!
+        console.log("CONTRACT AS gasCostWei ------------------------", gasCostWei);
 
-        // clear snapshots
-        delete snapshotToken0[trader];
-        delete snapshotToken1[trader];
+        // final profitPercentage (scaled by 1e6 => 100% = 1_000_000)
+        int256 profitPercentage;
+        if (valueOut > valueIn + gasCostWei) {
+            profitPercentage = int256(((valueOut - (valueIn + gasCostWei)) * 1e6) / valueIn);
+        } else {
+            profitPercentage = -int256((((valueIn + gasCostWei) - valueOut) * 1e6) / valueIn);
+        }
+        console.log("CONTRACT AS profitPercentage ------------------------", profitPercentage);
+
+        // update trader stats
+        TraderStats storage stats = traderStats[trader];
+        stats.totalTrades++;
+        if (profitPercentage > 0) {
+            stats.profitableTrades++;
+            if (profitPercentage > stats.bestTradePercentage) {
+                stats.bestTradePercentage = profitPercentage;
+            }
+        }
+        stats.lastTradeTimestamp = block.timestamp;
+
+        console.log("CONTRACT AS stats.totalTrades ------------------------", stats.totalTrades);
+        console.log("CONTRACT AS stats.bestTradePercentage ------------------------", stats.bestTradePercentage);
+        console.log("CONTRACT AS stats.lastTradeTimestamp ------------------------", stats.lastTradeTimestamp);
+        console.log("CONTRACT AS stats.profitableTrades ------------------------", stats.profitableTrades);
+
+        // clear snapshot data
         delete snapshotGas[trader];
 
-        return (this.afterSwap.selector, 0);
+        return (BaseHook.afterSwap.selector, 0);
     }
 
     // ADD NATSPEC
@@ -382,28 +380,25 @@ contract DexProfitWars is BaseHook {
         return (stats.totalTrades, stats.profitableTrades, stats.bestTradePercentage, stats.totalBonusPoints, stats.lastTradeTimestamp);
     }
 
-    /**
-     * @notice For testing: simulate a swap.
-     * This function calls manager.swap(...) with the provided parameters.
-     * In doing so, it triggers _beforeSwap and _afterSwap callbacks,
-     * allowing the hook to record snapshots and compute PnL.
-     */
-    function simulateSwap(
-        PoolKey calldata key,
-        bool zeroForOne,
-        uint256 inputAmount,
-        bytes calldata hookData
-    ) external {
-        IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
-            zeroForOne: zeroForOne,
-            amountSpecified: -int256(inputAmount),
-            sqrtPriceLimitX96: zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
-        });
-        // This call will trigger _beforeSwap and _afterSwap on this hook
-        manager.swap(key, params, hookData);
-    }
-
     // ========================================= HELPER FUNCTIONS ========================================
+    // TODO: NATSPEC
+    // --- Helper function: Get average gas price from Chainlink oracle ---
+    function _getAverageGasPrice() internal view returns (uint256) {
+        (, int256 answer, , ,) = gasPriceOracle.latestRoundData();
+        require(answer > 0, "Invalid gas price");
+
+        // convert to uint256 and scale based on the oracle decimals
+        uint256 gasPrice = uint256(answer);
+
+        // oracle has 8 decimals, scale to 18 decimals:
+        if (gasPriceOracleDecimals < 18) {
+            gasPrice = gasPrice * (10 ** (18 - gasPriceOracleDecimals));
+        } else if (gasPriceOracleDecimals > 18) {
+            gasPrice = gasPrice / (10 ** (gasPriceOracleDecimals - 18));
+        }
+
+        return gasPrice;
+    }
     // TODO NATSPEC
     // function _getPnLParameters(address sender, PoolKey calldata key)
     //     internal

@@ -24,7 +24,6 @@ import {LiquidityAmounts} from "@uniswap/v4-core/test/utils/LiquidityAmounts.sol
 
 import {MockV3Aggregator} from "./mocks/MockV3Aggregator.sol";
 import {DexProfitWars} from "../src/DexProfitWars.sol";
-import {DexProfitWarsRouter} from "../src/DexProfitWarsRouter.sol";
 
 // TODO: REMOVE CONSOLE.LOGS
 
@@ -55,7 +54,6 @@ contract DexProfitWarsTest is Test, Deployers {
     using CurrencyLibrary for Currency;
 
     DexProfitWars public hook;
-    DexProfitWarsRouter public router;
     PoolSwapTest public poolSwapTest;
 
     // token currencies in the pool
@@ -65,6 +63,7 @@ contract DexProfitWarsTest is Test, Deployers {
     MockV3Aggregator public ethUsdOracle;
     MockV3Aggregator public token0UsdOracle;
     MockV3Aggregator public token1UsdOracle;
+    MockV3Aggregator public gasPriceOracle;
 
     address USER = makeAddr("USER");
 
@@ -75,8 +74,11 @@ contract DexProfitWarsTest is Test, Deployers {
     uint256 constant INITIAL_LIQUIDITY = 500e18;
     uint256 constant SCALING_FACTOR = 1e9; // Needed ???
     uint256 constant MINIMUM_PROFIT_BPS = 200; // 2% minimum profit
-    uint256 constant GAS_PRICE = 15; // 15 gewi
     bool constant ZERO_FOR_ONE = true; // user trading token0 for token1
+
+    // set GAS_PRICE in wei
+    // 15 gwei = 15 * 10^9 wei.
+    uint256 constant GAS_PRICE = 15e9; // 15 gwei in wei
 
     function setUp() public {
         // deploy PoolManager and Router contracts
@@ -98,6 +100,7 @@ contract DexProfitWarsTest is Test, Deployers {
         // ethUsdOracle = new MockV3Aggregator(8, 2000e8); // ETH = $2000
         // token0UsdOracle = new MockV3Aggregator(8, int256(ONE)); // TOKEN0 = $1
         // token1UsdOracle = new MockV3Aggregator(8, int256(FOUR)); // TOKEN1 = $4 (4 x token0)
+        gasPriceOracle = new MockV3Aggregator(8, 15e8); // gas = 15 gwei
 
         // deploy hook to an address with the proper flags
         uint160 flags = uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG);
@@ -110,7 +113,8 @@ contract DexProfitWarsTest is Test, Deployers {
         //     address(token1UsdOracle)
         // );
         bytes memory constructorArgs = abi.encode(
-            address(manager)
+            address(manager),
+            address(gasPriceOracle)
         );
 
         deployCodeTo(
@@ -126,11 +130,11 @@ contract DexProfitWarsTest is Test, Deployers {
             token1,
             hook,
             3000, // 0.3% swap fees
-            SQRT_PRICE_1_2 // initialize with token1 being worth 4x token0
+            SQRT_PRICE_1_1
         );
 
         // add initial liquidity to the pool
-        modifyLiquidityRouter.modifyLiquidity{value: INITIAL_LIQUIDITY}(
+        modifyLiquidityRouter.modifyLiquidity(
             key,
             IPoolManager.ModifyLiquidityParams({
                 tickLower: -60,
@@ -138,30 +142,18 @@ contract DexProfitWarsTest is Test, Deployers {
                 liquidityDelta: int256(INITIAL_LIQUIDITY),
                 salt: bytes32(0)
             }),
-            ""
+            ZERO_BYTES
         );
 
-        poolSwapTest = new PoolSwapTest(manager);
-
-        // deploy the router passing the manager and the hook address
-        router = new DexProfitWarsRouter(manager, address(hook));
-
-        // set gas price
+        // set the gas price (in wei) for test txns
         vm.txGasPrice(GAS_PRICE);
     }
 
     function test_swapViaRouter() public {
         vm.startPrank(USER);
 
-        // approve tokens to the router
-        MockERC20(Currency.unwrap(token0)).approve(address(poolSwapTest), type(uint256).max);
-        MockERC20(Currency.unwrap(token1)).approve(address(poolSwapTest), type(uint256).max);
         MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), type(uint256).max);
         MockERC20(Currency.unwrap(token0)).approve(address(swapRouter), type(uint256).max);
-        MockERC20(Currency.unwrap(token0)).approve(address(manager), type(uint256).max);
-        MockERC20(Currency.unwrap(token1)).approve(address(manager), type(uint256).max);
-        MockERC20(Currency.unwrap(token0)).approve(address(hook), type(uint256).max);
-        MockERC20(Currency.unwrap(token1)).approve(address(hook), type(uint256).max);
 
         // Ssapshot the user's balances before the swap
         uint256 userToken0Before = token0.balanceOf(USER);
