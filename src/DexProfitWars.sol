@@ -330,60 +330,60 @@ console.log("CONTRACT AS token1PriceUSD ------------------------", token1PriceUS
         console.log("CONTRACT AS amt0 ------------------------", amt0);
         console.log("CONTRACT AS amt1------------------------", amt1);
 
-        // // for zeroForOne: user is spending token0, receiving token1
-        // // for !zeroForOne: user is spending token1, receiving token0
-        // uint256 tokensSpent;
-        // uint256 tokensGained;
-        // if (params.zeroForOne) {
-        //     // userSpent = negative of amt0 if amt0 < 0
-        //     tokensSpent = amt0 < 0 ? uint256(uint128(-amt0)) : 0;
-        //     tokensGained = amt1 > 0 ? uint256(uint128(amt1)) : 0;
-        // } else {
-        //     // userSpent = negative of amt1 if amt1 < 0
-        //     tokensSpent = amt1 < 0 ? uint256(uint128(-amt1)) : 0;
-        //     tokensGained = amt0 > 0 ? uint256(uint128(amt0)) : 0;
-        // }
+        // for zeroForOne: user is spending token0, receiving token1
+        // for !zeroForOne: user is spending token1, receiving token0
+        uint256 tokensSpent;
+        uint256 tokensGained;
+        if (params.zeroForOne) {
+            // userSpent = negative of amt0 if amt0 < 0
+            tokensSpent = amt0 < 0 ? uint256(uint128(-amt0)) : 0;
+            tokensGained = amt1 > 0 ? uint256(uint128(amt1)) : 0;
+        } else {
+            // userSpent = negative of amt1 if amt1 < 0
+            tokensSpent = amt1 < 0 ? uint256(uint128(-amt1)) : 0;
+            tokensGained = amt0 > 0 ? uint256(uint128(amt0)) : 0;
+        }
 
-        // // convert token amounts to USD
-        // // assuming both tokens have 18 decimals
-        // uint256 valueInUSD;
-        // uint256 valueOutUSD;
-        // if (params.zeroForOne) {
-        //     // User pays token0 and receives token1.
-        //     valueInUSD = (tokensSpent * token0PriceUSD) / 1e18;
-        //     valueOutUSD = (tokensGained * token1PriceUSD) / 1e18;
-        // } else {
-        //     // User pays token1 and receives token0.
-        //     valueInUSD = (tokensSpent * token1PriceUSD) / 1e18;
-        //     valueOutUSD = (tokensGained * token0PriceUSD) / 1e18;
-        // }
-        // console.log("HOOK: valueInUSD:", valueInUSD);
-        // console.log("HOOK: valueOutUSD:", valueOutUSD);
+        // convert token amounts to USD
+        // assuming both tokens have 18 decimals
+        uint256 valueInUSD;
+        uint256 valueOutUSD;
+        if (params.zeroForOne) {
+            // User pays token0 and receives token1.
+            valueInUSD = (tokensSpent * token0PriceUSD) / 1e18;
+            valueOutUSD = (tokensGained * token1PriceUSD) / 1e18;
+        } else {
+            // User pays token1 and receives token0.
+            valueInUSD = (tokensSpent * token1PriceUSD) / 1e18;
+            valueOutUSD = (tokensGained * token0PriceUSD) / 1e18;
+        }
+        console.log("HOOK: valueInUSD:", valueInUSD);
+        console.log("HOOK: valueOutUSD:", valueOutUSD);
 
-        // // subtract the gas cost in USD from the output value
-        // int256 profitPercentage;
-        // if (valueOutUSD > valueInUSD + gasCostUSD) {
-        //     profitPercentage = int256(((valueOutUSD - (valueInUSD + gasCostUSD)) * 1e6) / valueInUSD);
-        // } else {
-        //     profitPercentage = -int256((((valueInUSD + gasCostUSD) - valueOutUSD) * 1e6) / valueInUSD);
-        // }
-        // console.log("HOOK: profitPercentage (bps):", profitPercentage);
+        // subtract the gas cost in USD from the output value
+        int256 profitPercentage;
+        if (valueOutUSD > valueInUSD + gasCostUSD) {
+            profitPercentage = int256(((valueOutUSD - (valueInUSD + gasCostUSD)) * 1e6) / valueInUSD);
+        } else {
+            profitPercentage = -int256((((valueInUSD + gasCostUSD) - valueOutUSD) * 1e6) / valueInUSD);
+        }
+        console.log("HOOK: profitPercentage (bps):", profitPercentage);
 
-        // // update trader stats
-        // TraderStats storage stats = traderStats[trader];
-        // stats.totalTrades++;
-        // if (profitPercentage > 0) {
-        //     stats.profitableTrades++;
-        //     if (profitPercentage > stats.bestTradePercentage) {
-        //         stats.bestTradePercentage = profitPercentage;
-        //     }
-        // }
-        // stats.lastTradeTimestamp = block.timestamp;
+        // update trader stats
+        TraderStats storage stats = traderStats[trader];
+        stats.totalTrades++;
+        if (profitPercentage > 0) {
+            stats.profitableTrades++;
+            if (profitPercentage > stats.bestTradePercentage) {
+                stats.bestTradePercentage = profitPercentage;
+            }
+        }
+        stats.lastTradeTimestamp = block.timestamp;
 
-        // console.log("CONTRACT AS stats.totalTrades ------------------------", stats.totalTrades);
-        // console.log("CONTRACT AS stats.bestTradePercentage ------------------------", stats.bestTradePercentage);
-        // console.log("CONTRACT AS stats.lastTradeTimestamp ------------------------", stats.lastTradeTimestamp);
-        // console.log("CONTRACT AS stats.profitableTrades ------------------------", stats.profitableTrades);
+        console.log("CONTRACT AS stats.totalTrades ------------------------", stats.totalTrades);
+        console.log("CONTRACT AS stats.bestTradePercentage ------------------------", stats.bestTradePercentage);
+        console.log("CONTRACT AS stats.lastTradeTimestamp ------------------------", stats.lastTradeTimestamp);
+        console.log("CONTRACT AS stats.profitableTrades ------------------------", stats.profitableTrades);
 
         // clear snapshot data
         delete snapshotGas[trader];
