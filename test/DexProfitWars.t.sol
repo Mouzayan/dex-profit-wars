@@ -60,9 +60,10 @@ contract DexProfitWarsTest is Test, Deployers {
     Currency public token0;
     Currency public token1;
 
+    // mock oracles
     MockV3Aggregator public ethUsdOracle;
-    MockV3Aggregator public token0UsdOracle;
-    MockV3Aggregator public token1UsdOracle;
+    MockV3Aggregator public token0Oracle;
+    MockV3Aggregator public token1Oracle;
     MockV3Aggregator public gasPriceOracle;
 
     address USER = makeAddr("USER");
@@ -76,8 +77,7 @@ contract DexProfitWarsTest is Test, Deployers {
     uint256 constant MINIMUM_PROFIT_BPS = 200; // 2% minimum profit
     bool constant ZERO_FOR_ONE = true; // user trading token0 for token1
 
-    // set GAS_PRICE in wei
-    // 15 gwei = 15 * 10^9 wei.
+    // set GAS_PRICE in wei (15 gwei = 15e9 wei)
     uint256 constant GAS_PRICE = 15e9; // 15 gwei in wei
 
     function setUp() public {
@@ -96,25 +96,26 @@ contract DexProfitWarsTest is Test, Deployers {
         MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), type(uint256).max);
         MockERC20(Currency.unwrap(token1)).approve(address(modifyLiquidityRouter), type(uint256).max);
 
-        // deploy mock price feeds (Chainlink typically uses 8 decimals)
-        // ethUsdOracle = new MockV3Aggregator(8, 2000e8); // ETH = $2000
-        // token0UsdOracle = new MockV3Aggregator(8, int256(ONE)); // TOKEN0 = $1
-        // token1UsdOracle = new MockV3Aggregator(8, int256(FOUR)); // TOKEN1 = $4 (4 x token0)
-        gasPriceOracle = new MockV3Aggregator(8, 15e8); // gas = 15 gwei
+        // deploy mock oracles, assume 8 decimals for each
+        // for ETH/USD oracle: assume 2000 USD per ETH → 2000e8
+        ethUsdOracle = new MockV3Aggregator(8, 2000e8);
+        // for token0/USD oracle: assume token0 = $1
+        token0Oracle = new MockV3Aggregator(8, 1e8);
+        // for token1/USD oracle: assume token1 = $1
+        token1Oracle = new MockV3Aggregator(8, 1e8);
+        // for gas price oracle: assume 15 gwei → 15e8
+        gasPriceOracle = new MockV3Aggregator(8, 15e8);
 
         // deploy hook to an address with the proper flags
         uint160 flags = uint160(Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG);
         address hookAddress = address(flags);
 
-        // bytes memory constructorArgs = abi.encode(
-        //     address(manager),
-        //     address(ethUsdOracle),
-        //     address(token0UsdOracle),
-        //     address(token1UsdOracle)
-        // );
         bytes memory constructorArgs = abi.encode(
             address(manager),
-            address(gasPriceOracle)
+            address(gasPriceOracle),
+            address(token0Oracle),
+            address(token1Oracle),
+            address(ethUsdOracle)
         );
 
         deployCodeTo(
@@ -149,7 +150,7 @@ contract DexProfitWarsTest is Test, Deployers {
         vm.txGasPrice(GAS_PRICE);
     }
 
-    function test_swapViaRouter() public {
+    function test_swap() public {
         vm.startPrank(USER);
 
         MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), type(uint256).max);
@@ -159,11 +160,18 @@ contract DexProfitWarsTest is Test, Deployers {
         uint256 userToken0Before = token0.balanceOf(USER);
         uint256 userToken1Before = token1.balanceOf(USER);
 
+        // get current tick from manager
+        (uint160 sqrtPriceX96, int24 currentTick, ,) = manager.getSlot0(key.toId());
+
+        // select limit ~10 ticks below the current tick
+        int24 tickLimit = currentTick - 10;
+        uint160 sqrtPriceLimitX96 = TickMath.getSqrtPriceAtTick(tickLimit);
+
         // Build the swap params
         IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
-            zeroForOne: true,
-            amountSpecified: -int256(100e18), // exact input of 100 token0
-            sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            zeroForOne: ZERO_FOR_ONE,
+            amountSpecified: -int256(1e18), // exact input of 1 token0
+            sqrtPriceLimitX96: sqrtPriceLimitX96
         });
 
         PoolSwapTest.TestSettings memory testSettings = PoolSwapTest.TestSettings({
@@ -179,7 +187,7 @@ contract DexProfitWarsTest is Test, Deployers {
 
         // ater the swap, check user balances
         uint256 userToken0After = MockERC20(Currency.unwrap(token0)).balanceOf(USER);
-        assertEq(userToken0Before - userToken0After, 100e18);
+        assertEq(userToken0Before - userToken0After, 1e18);
 
         // ceck USER's token1 balance increased
         uint256 userToken1After = token1.balanceOf(USER);
