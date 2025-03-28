@@ -15,6 +15,7 @@ import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 import {Currency, CurrencyLibrary} from "v4-core/types/Currency.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
+import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 
 import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {TickMath} from "v4-core/libraries/TickMath.sol";
@@ -96,14 +97,14 @@ contract DexProfitWarsTest is Test, Deployers {
         MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), type(uint256).max);
         MockERC20(Currency.unwrap(token1)).approve(address(modifyLiquidityRouter), type(uint256).max);
 
-        // deploy mock oracles, assume 8 decimals for each
-        // for ETH/USD oracle: assume 2000 USD per ETH → 2000e8
+        // deploy mock oracles, 8 decimals for each
+        // for ETH/USD oracle: 2000 USD per ETH → 2000e8
         ethUsdOracle = new MockV3Aggregator(8, 2000e8);
-        // for token0/USD oracle: assume token0 = $1
+        // for token0/USD oracle: token0 = $1
         token0Oracle = new MockV3Aggregator(8, 1e8);
-        // for token1/USD oracle: assume token1 = $1
-        token1Oracle = new MockV3Aggregator(8, 1e8);
-        // for gas price oracle: assume 15 gwei → 15e8
+        // for token1/USD oracle: token1 = $2
+        token1Oracle = new MockV3Aggregator(8, 2e8);
+        // for gas price oracle: 15 gwei → 15e8
         gasPriceOracle = new MockV3Aggregator(8, 15e8);
 
         // deploy hook to an address with the proper flags
@@ -150,27 +151,27 @@ contract DexProfitWarsTest is Test, Deployers {
         vm.txGasPrice(GAS_PRICE);
     }
 
-    function test_swap() public {
+    function test_swapAtLoss() public {
         vm.startPrank(USER);
 
         MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), type(uint256).max);
         MockERC20(Currency.unwrap(token0)).approve(address(swapRouter), type(uint256).max);
 
-        // Ssapshot the user's balances before the swap
+        // user's balances before the swap
         uint256 userToken0Before = token0.balanceOf(USER);
         uint256 userToken1Before = token1.balanceOf(USER);
 
         // get current tick from manager
-        (uint160 sqrtPriceX96, int24 currentTick, ,) = manager.getSlot0(key.toId());
+        (, int24 currentTick, ,) = manager.getSlot0(key.toId());
 
         // select limit ~10 ticks below the current tick
         int24 tickLimit = currentTick - 10;
         uint160 sqrtPriceLimitX96 = TickMath.getSqrtPriceAtTick(tickLimit);
 
-        // Build the swap params
+        // build the swap params
         IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
             zeroForOne: ZERO_FOR_ONE,
-            amountSpecified: -int256(1e18), // exact input of 1 token0
+            amountSpecified: -int256(1e8), // exact input of token0
             sqrtPriceLimitX96: sqrtPriceLimitX96
         });
 
@@ -185,17 +186,79 @@ contract DexProfitWarsTest is Test, Deployers {
         // do the swap
         swapRouter.swap(key, params, testSettings, hookData);
 
-        // ater the swap, check user balances
+        // after the swap, check user balances
         uint256 userToken0After = MockERC20(Currency.unwrap(token0)).balanceOf(USER);
-        assertEq(userToken0Before - userToken0After, 1e18);
+        assertEq(userToken0Before - userToken0After, 1e8);
 
-        // ceck USER's token1 balance increased
+        // check USER's token1 balance increased
         uint256 userToken1After = token1.balanceOf(USER);
-        assertGt(userToken1After, token1.balanceOf(USER));
+        assertGt(userToken1After, userToken1Before);
 
-        // Check that the hook recorded one trade.
+        // check that the hook recorded one trade
         (uint256 totalTrades,,,,) = hook.getTraderStats(USER);
         assertEq(totalTrades, 1);
+
+        // check that the hook recorded zero profitable trades
+        (,uint256 profitableTrades,,,) = hook.getTraderStats(USER);
+        assertEq(profitableTrades, 0);
+
+        vm.stopPrank();
+    }
+
+    function test_swapAtProfit() public {
+        vm.startPrank(USER);
+
+        MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), type(uint256).max);
+        MockERC20(Currency.unwrap(token0)).approve(address(swapRouter), type(uint256).max);
+
+        // user's balances before the swap
+        uint256 userToken0Before = token0.balanceOf(USER);
+        uint256 userToken1Before = token1.balanceOf(USER);
+
+        // get current tick from manager
+        ( , int24 currentTick, ,) = manager.getSlot0(key.toId());
+
+        // select limit ~10 ticks below the current tick
+        int24 tickLimit = currentTick - 10;
+        uint160 sqrtPriceLimitX96 = TickMath.getSqrtPriceAtTick(tickLimit);
+
+        // build the swap params
+        IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
+            zeroForOne: ZERO_FOR_ONE,
+            amountSpecified: -int256(50e18), // exact input of token0
+            sqrtPriceLimitX96: sqrtPriceLimitX96
+        });
+
+        PoolSwapTest.TestSettings memory testSettings = PoolSwapTest.TestSettings({
+            takeClaims: false,
+            settleUsingBurn: false
+        });
+
+        // build hook data
+        bytes memory hookData = abi.encode(USER);
+
+        // do the swap and return balance delta
+        BalanceDelta swapDelta = swapRouter.swap(key, params, testSettings, hookData);
+
+        // how many token0 the user actually spend
+        int128 amt0 = swapDelta.amount0();
+        uint256 tokensSpent = amt0 < 0 ? uint256(uint128(-amt0)) : 0;
+
+        // ater the swap, check user balances
+        uint256 userToken0After = MockERC20(Currency.unwrap(token0)).balanceOf(USER);
+        assertEq(userToken0Before - userToken0After, tokensSpent);
+
+        // check USER's token1 balance increased
+        uint256 userToken1After = token1.balanceOf(USER);
+        assertGt(userToken1After, userToken1Before);
+
+        // check that the hook recorded one trade
+        (uint256 totalTrades,,,,) = hook.getTraderStats(USER);
+        assertEq(totalTrades, 1);
+
+        // check that the hook recorded one profitable trades
+        (,uint256 profitableTrades,,,) = hook.getTraderStats(USER);
+        assertEq(profitableTrades, 1);
 
         vm.stopPrank();
     }

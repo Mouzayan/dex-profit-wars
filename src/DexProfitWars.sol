@@ -226,7 +226,7 @@ contract DexProfitWars is BaseHook {
             beforeRemoveLiquidity: false,
             afterAddLiquidity: false,
             afterRemoveLiquidity: false,
-            beforeSwap: true, // record snapshot data
+            beforeSwap: true, // record gas snapshot
             afterSwap: true, // compute PnL swapDelta and gas cost from oracle
             beforeDonate: false,
             afterDonate: false,
