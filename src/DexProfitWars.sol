@@ -2,25 +2,15 @@
 pragma solidity 0.8.26;
 
 import {console} from "forge-std/Test.sol"; // REMOVE
-import {BaseHook} from "v4-periphery/src/utils/BaseHook.sol";
-import {ERC20} from "solmate/src/tokens/ERC20.sol"; // Is THIS NEEDED ????
-import {IERC20} from "forge-std/interfaces/IERC20.sol";
 import {AggregatorV3Interface} from "chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 
-import {CurrencyLibrary, Currency} from "v4-core/types/Currency.sol";
+import {BaseHook} from "v4-periphery/src/utils/BaseHook.sol";
+
 import {PoolKey} from "v4-core/types/PoolKey.sol";
-import {BalanceDeltaLibrary, BalanceDelta} from "v4-core/types/BalanceDelta.sol"; // ?? BOTH IMPORTS  NEEDED??
-import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/types/BeforeSwapDelta.sol"; // ?? BOTH IMPROTS NEEDED??
-import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
-
+import {BalanceDeltaLibrary, BalanceDelta} from "v4-core/types/BalanceDelta.sol";
+import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/types/BeforeSwapDelta.sol";
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
-import {IHooks} from "v4-core/interfaces/IHooks.sol";
-import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
-
-import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
-import {TickMath} from "v4-core/libraries/TickMath.sol";
 import {Hooks} from "v4-core/libraries/Hooks.sol";
-import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
 
 /**
  * @title DexProfitWars
@@ -102,61 +92,52 @@ import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
  *         - Reentrancy, CEI ??
  */
 contract DexProfitWars is BaseHook {
-    using StateLibrary for IPoolManager;
-    using CurrencyLibrary for Currency; // needed ???
-    using BalanceDeltaLibrary for BalanceDelta; // needed ???
+    using BalanceDeltaLibrary for BalanceDelta;
 
-    // struct TradeTracking { // REMOVE
-    //     uint256 tokenInAmount;
-    //     uint256 tokenOutAmount;
-    //     uint160 sqrtPriceX96Before; // Price before swap
-    //     uint160 sqrtPriceX96After; // Price after swap
-    //     uint256 timestamp;
-    // }
-
-    // Struct to track trader statistics
+    // ===================== Structures =====================
+    // struct to track trader statistics
     struct TraderStats {
         uint256 totalTrades;
         uint256 profitableTrades;
-        int256 bestTradePercentage; // personal best / best trade % within current bonus window
+        int256 bestTradePercentage; // personal best in basis points
         uint256 totalBonusPoints;
         uint256 lastTradeTimestamp;
     }
 
-    // the gas snapshot from _beforeSwap
+    // pepresents an individual record in the trading contest leaderboard
+    struct LeaderboardEntry {
+        address trader;
+        int256 profitPercentage; // profit in basis points
+        uint256 tradeVolumeUSD;  // trade dollar volume
+        uint256 timestamp;
+    }
+
+    // the leaderboard for a given contest window holds up to 3 entries
+    struct Leaderboard {
+        LeaderboardEntry[3] entries;
+    }
+
+    // =================== State Variables ==================
+    // trading contest window to leaderboard
+    // trading contest window is defined as block.timestamp / 2 days
+    mapping(uint256 => Leaderboard) private leaderboards;
+
     mapping(address => uint256) public snapshotGas;
     mapping(address => TraderStats) public traderStats;
 
-    // struct SwapGasTracking {
-    //     uint256 gasStart;
-    //     uint160 sqrtPriceX96Before;
-    // }
+    // constants DOES THIS NEED TO BE PRIVATE?
+    // 2% profit minimum profit threshold expressed in basis points
+    uint256 constant MINIMUM_PROFIT_BPS = 200;
+    // using multiplier 1e4 so 2% = 200 bps
+    uint256 constant BPS_MULTIPLIER = 1e4;
+    uint256 constant ONE = 1e18;
+     uint256 constant ONE_SQUARED = 1e36;
 
-    // // Mapping to store trader statistics
-    // mapping(address => SwapGasTracking) public swapGasTracker;
-    // // track reward tokens earned by each user
-    // mapping(address => uint256) public balanceOf;
-
-    // // Gas price caching
-    // // Make these private??????
-    // uint256 public lastGasPriceUpdate;
-    // uint256 public cachedGasPrice;
-    // uint256 public constant GAS_PRICE_UPDATE_INTERVAL = 1 hours;
-
-    // // Gas cost thresholds
-    // // Make these private??????
-    // uint256 public constant MAX_GAS_COST_USD = 50 * 1e18; // $50 max gas cost
-    // uint256 public constant MAX_GAS_COST_BASIS_POINTS = 100; // 1% of trade value
-
-    // // Oracle staleness thresholds
-    // // Make these private??????
-    // uint256 private constant MAX_ORACLE_AGE = 1 hours;
     // uint256 private constant BONUS_WINDOW = 2 days; // VALUE TO BE RE-THOUGHT
     // // 1e14 i.e., 0.0001 tokens per 1% profit
     // uint256 constant BASE_BONUS_RATE = 1e14;
-    // uint256 constant MINIMUM_PROFIT_BPS = 200; // 2% minimum profit
 
-    // Pprice oracle interfaces
+    // price oracle interfaces
     AggregatorV3Interface public gasPriceOracle;
     AggregatorV3Interface public token0PriceOracle; // token0 price in USD
     AggregatorV3Interface public token1PriceOracle; // token1 price in USD
@@ -168,8 +149,15 @@ contract DexProfitWars is BaseHook {
     uint8 private immutable token1PriceOracleDecimals;
     uint8 private immutable ethUsdOracleDecimals;
 
-
     IPoolManager manager;
+
+    // =================== Oracle Cashing ==================
+    uint256 private cachedGasPrice;
+    uint256 private cachedEthPriceUSD;
+    uint256 private cachedToken0PriceUSD;
+    uint256 private cachedToken1PriceUSD;
+    uint256 private lastOracleCacheUpdate;
+    uint256 constant ORACLE_CACHE_INTERVAL = 1 minutes;
 
     // ============================================= ERRORS =============================================
     // Create separate errors file
@@ -237,6 +225,7 @@ contract DexProfitWars is BaseHook {
         });
     }
 
+    // =========================================== HOOK CALLBACKS ==========================================
     // TODO: MOVE TO INTERNAL FUNCTIONS
     /** _beforeSwap records the trader’s pre-swap gas balance. FIX NATSPEc
      * @notice Before-swap hook: record the price and gas usage so we can do PnL calculations later.
@@ -246,16 +235,14 @@ contract DexProfitWars is BaseHook {
      * @notice Records the initial state before a swap occurs, including gas usage and price.
      *         This data is used to calculate profit/loss and gas costs in afterSwap.
      *
-     * @param sender                        The address initiating the swap.
      * @param key                           The pool key containing token pair and fee information.
-     * @param params                        The swap parameters including amount and direction.
      *
      * @return                              The function selector to indicate successful hook execution.
      */
     function _beforeSwap(
-        address sender,
+        address,
         PoolKey calldata key,
-        IPoolManager.SwapParams calldata params,
+        IPoolManager.SwapParams calldata,
         bytes calldata hookData
     ) internal override onlyPoolManager returns (bytes4, BeforeSwapDelta, uint24) {
         // decode hookData
@@ -278,8 +265,6 @@ contract DexProfitWars is BaseHook {
      *
      * @dev This function is only callable by the PoolManager.
      *
-     * @param sender                        The address that initiated the swap.
-     * @param key                           The pool key containing token pair and fee information.
      * @param params                        The swap parameters including amount and direction.
      * @param delta                         The balance changes resulting from the swap.
      * @param hookData                      /////// TODO: ADD this
@@ -287,8 +272,8 @@ contract DexProfitWars is BaseHook {
      * @return                              The function selector to indicate successful hook execution.
      */
     function _afterSwap(
-        address sender,
-        PoolKey calldata key,
+        address,
+        PoolKey calldata,
         IPoolManager.SwapParams calldata params,
         BalanceDelta delta,
         bytes calldata hookData
@@ -296,42 +281,23 @@ contract DexProfitWars is BaseHook {
         // decode hookData to get the trader
         (address trader) = abi.decode(hookData, (address));
 
-        // retrieve gas snapshot from _beforeSwap
+        // retrieve gas snapshot
         uint256 gasBefore = snapshotGas[trader];
         uint256 gasUsed = gasBefore > gasleft() ? (gasBefore - gasleft()) : 0;
-        // get the average gas price from the oracle.
-        uint256 avgGasPrice = _getAverageGasPrice();
-        console.log("CONTRACT AS avgGasPrice ------------------------", avgGasPrice);
 
-        // Get the ETH/USD price from the ethUsdOracle (scaled to 18 decimals).
-        uint256 ethPriceUSD = _getOraclePrice(ethUsdOracle, ethUsdOracleDecimals);
- console.log("CONTRACT AS ethPriceUSD ------------------------", ethPriceUSD);
+        // update oracle cache if necessary
+        _updateOracleCache();
+        uint256 avgGasPrice = cachedGasPrice;
+        uint256 ethPriceUSD = cachedEthPriceUSD;
+        uint256 token0PriceUSD = cachedToken0PriceUSD;
+        uint256 token1PriceUSD = cachedToken1PriceUSD;
 
-        // Get token prices in USD.
-        uint256 token0PriceUSD = _getOraclePrice(token0PriceOracle, token0PriceOracleDecimals);
-        uint256 token1PriceUSD = _getOraclePrice(token1PriceOracle, token1PriceOracleDecimals);
-console.log("CONTRACT AS token0PriceUSD ------------------------", token0PriceUSD);
-console.log("CONTRACT AS token1PriceUSD ------------------------", token1PriceUSD);
-        // convert gas cost to USD
-        // gasUsed * avgGasPrice gives gas cost in wei
-        // divide by 1e18 to convert wei to ETH
-        // multiply by ethPriceUSD to get USD value
-        uint256 gasCostUSD = ((gasUsed * avgGasPrice) * ethPriceUSD) / 1e36;
-        console.log("HOOK: gasUsed:", gasUsed);
-        console.log("HOOK: avgGasPrice (wei):", avgGasPrice);
-        console.log("HOOK: ethPriceUSD:", ethPriceUSD);
-        console.log("HOOK: gasCostUSD:", gasCostUSD);
+        // calculate gas cost in USD
+        uint256 gasCostUSD = ((gasUsed * avgGasPrice) * ethPriceUSD) / ONE_SQUARED;
 
-        // parse the swapDelta amounts
-        //    amount0 < 0 => user is paying token0
-        //    amount1 > 0 => user is receiving token1
+        // determine token amounts exchanged
         int128 amt0 = delta.amount0();
         int128 amt1 = delta.amount1();
-        console.log("CONTRACT AS amt0 ------------------------", amt0);
-        console.log("CONTRACT AS amt1------------------------", amt1);
-
-        // for zeroForOne: user is spending token0, receiving token1
-        // for !zeroForOne: user is spending token1, receiving token0
         uint256 tokensSpent;
         uint256 tokensGained;
         if (params.zeroForOne) {
@@ -344,28 +310,24 @@ console.log("CONTRACT AS token1PriceUSD ------------------------", token1PriceUS
             tokensGained = amt0 > 0 ? uint256(uint128(amt0)) : 0;
         }
 
-        // convert token amounts to USD
-        // assuming both tokens have 18 decimals
+        // convert token amounts to USD values assuming 18 decimals
         uint256 valueInUSD;
         uint256 valueOutUSD;
         if (params.zeroForOne) {
-            // User pays token0 and receives token1.
-            valueInUSD = (tokensSpent * token0PriceUSD) / 1e18;
-            valueOutUSD = (tokensGained * token1PriceUSD) / 1e18;
+            valueInUSD = (tokensSpent * token0PriceUSD) / ONE;
+            valueOutUSD = (tokensGained * token1PriceUSD) / ONE;
         } else {
-            // User pays token1 and receives token0.
-            valueInUSD = (tokensSpent * token1PriceUSD) / 1e18;
-            valueOutUSD = (tokensGained * token0PriceUSD) / 1e18;
+            valueInUSD = (tokensSpent * token1PriceUSD) / ONE;
+            valueOutUSD = (tokensGained * token0PriceUSD) / ONE;
         }
-        console.log("HOOK: valueInUSD:", valueInUSD);
-        console.log("HOOK: valueOutUSD:", valueOutUSD);
 
-        // subtract the gas cost in USD from the output value
+        // calculate profit percentage in basis points
+        // using 1e4 so that 2% equals 200 basis points
         int256 profitPercentage;
         if (valueOutUSD > valueInUSD + gasCostUSD) {
-            profitPercentage = int256(((valueOutUSD - (valueInUSD + gasCostUSD)) * 1e6) / valueInUSD);
+            profitPercentage = int256(((valueOutUSD - (valueInUSD + gasCostUSD)) * BPS_MULTIPLIER) / valueInUSD);
         } else {
-            profitPercentage = -int256((((valueInUSD + gasCostUSD) - valueOutUSD) * 1e6) / valueInUSD);
+            profitPercentage = -int256((((valueInUSD + gasCostUSD) - valueOutUSD) * BPS_MULTIPLIER) / valueInUSD);
         }
         console.log("HOOK: profitPercentage (bps):", profitPercentage);
 
@@ -380,12 +342,13 @@ console.log("CONTRACT AS token1PriceUSD ------------------------", token1PriceUS
         }
         stats.lastTradeTimestamp = block.timestamp;
 
-        console.log("CONTRACT AS stats.totalTrades ------------------------", stats.totalTrades);
-        console.log("CONTRACT AS stats.bestTradePercentage ------------------------", stats.bestTradePercentage);
-        console.log("CONTRACT AS stats.lastTradeTimestamp ------------------------", stats.lastTradeTimestamp);
-        console.log("CONTRACT AS stats.profitableTrades ------------------------", stats.profitableTrades);
+        // update the leaderboard only with trades that exceed the 2%
+        // threshold for the current trading contest window
+        if (profitPercentage > int256(MINIMUM_PROFIT_BPS)) {
+            _updateLeaderboard(trader, profitPercentage, valueInUSD, block.timestamp);
+        }
 
-        // clear snapshot data
+        // clear snapshot
         delete snapshotGas[trader];
 
         return (BaseHook.afterSwap.selector, 0);
@@ -397,7 +360,182 @@ console.log("CONTRACT AS token1PriceUSD ------------------------", token1PriceUS
         return (stats.totalTrades, stats.profitableTrades, stats.bestTradePercentage, stats.totalBonusPoints, stats.lastTradeTimestamp);
     }
 
+    // ADD NATSPEC
+    // returns the entire leaderboard for a given contest window
+    function getContestLeaderboard(uint256 window) external view returns (LeaderboardEntry[3] memory) {
+        return leaderboards[window].entries;
+    }
+
     // ========================================= HELPER FUNCTIONS ========================================
+    // TODO: NATSPEC
+    // updates the oracle cache if the cache interval has passed
+    function _updateOracleCache() internal {
+        if (block.timestamp - lastOracleCacheUpdate >= ORACLE_CACHE_INTERVAL) {
+            // update gas price
+            (, int256 gasAnswer, , ,) = gasPriceOracle.latestRoundData();
+            require(gasAnswer > 0, "Invalid gas price");
+            uint256 _gasPrice = uint256(gasAnswer);
+            if (gasPriceOracleDecimals < 18) {
+                _gasPrice = _gasPrice * (10 ** (18 - gasPriceOracleDecimals));
+            } else if (gasPriceOracleDecimals > 18) {
+                _gasPrice = _gasPrice / (10 ** (gasPriceOracleDecimals - 18));
+            }
+            cachedGasPrice = _gasPrice;
+
+            // update ETH price
+            (, int256 ethAnswer, , ,) = ethUsdOracle.latestRoundData();
+            require(ethAnswer > 0, "Invalid eth price");
+            uint256 _ethPrice = uint256(ethAnswer);
+            if (ethUsdOracleDecimals < 18) {
+                _ethPrice = _ethPrice * (10 ** (18 - ethUsdOracleDecimals));
+            } else if (ethUsdOracleDecimals > 18) {
+                _ethPrice = _ethPrice / (10 ** (ethUsdOracleDecimals - 18));
+            }
+            cachedEthPriceUSD = _ethPrice;
+
+            // update token0 price
+            (, int256 token0Answer, , ,) = token0PriceOracle.latestRoundData();
+            require(token0Answer > 0, "Invalid token0 price");
+            uint256 _token0Price = uint256(token0Answer);
+            if (token0PriceOracleDecimals < 18) {
+                _token0Price = _token0Price * (10 ** (18 - token0PriceOracleDecimals));
+            } else if (token0PriceOracleDecimals > 18) {
+                _token0Price = _token0Price / (10 ** (token0PriceOracleDecimals - 18));
+            }
+            cachedToken0PriceUSD = _token0Price;
+
+            // update token1 price
+            (, int256 token1Answer, , ,) = token1PriceOracle.latestRoundData();
+            require(token1Answer > 0, "Invalid token1 price");
+            uint256 _token1Price = uint256(token1Answer);
+            if (token1PriceOracleDecimals < 18) {
+                _token1Price = _token1Price * (10 ** (18 - token1PriceOracleDecimals));
+            } else if (token1PriceOracleDecimals > 18) {
+                _token1Price = _token1Price / (10 ** (token1PriceOracleDecimals - 18));
+            }
+            cachedToken1PriceUSD = _token1Price;
+
+            lastOracleCacheUpdate = block.timestamp;
+        }
+    }
+
+    // TODO: NATSPEC
+    // _updateLeaderboard updates the leaderboard for the current trading contest window
+    // if the trader already has an entry, it updates it only if the new trade is better
+    // otherwise, it inserts the new entry if there is space or if it beats the worst entry
+    function _updateLeaderboard(
+        address trader,
+        int256 profitPercentage,
+        uint256 tradeVolumeUSD,
+        uint256 timestamp
+    ) internal {
+        uint256 window = block.timestamp / 2 days;
+        Leaderboard storage lb = leaderboards[window];
+
+        // check if the trader already exists in the leaderboard
+        bool found = false;
+        uint8 indexFound = 0;
+        for (uint8 i = 0; i < 3; i++) {
+            if (lb.entries[i].trader == trader) {
+                found = true;
+                indexFound = i;
+                break;
+            }
+        }
+
+        if (found) {
+            // only update if the new trade is better than the current record
+            if (_isBetter(profitPercentage, timestamp, tradeVolumeUSD, lb.entries[indexFound])) {
+                lb.entries[indexFound] = LeaderboardEntry(trader, profitPercentage, tradeVolumeUSD, timestamp);
+            } else {
+                return;
+            }
+        } else {
+            // if trader is not present, look for an empty slot
+            bool inserted = false;
+            for (uint8 i = 0; i < 3; i++) {
+                if (lb.entries[i].trader == address(0)) {
+                    lb.entries[i] = LeaderboardEntry(trader, profitPercentage, tradeVolumeUSD, timestamp);
+                    inserted = true;
+                    break;
+                }
+            }
+
+            if (!inserted) {
+                // all slots are filled, find the worst entry
+                uint8 worstIndex = 0;
+                for (uint8 i = 1; i < 3; i++) {
+                    if (!_isBetter(
+                        lb.entries[i].profitPercentage,
+                        lb.entries[i].timestamp,
+                        lb.entries[i].tradeVolumeUSD,
+                        lb.entries[worstIndex]
+                    )) {
+                        worstIndex = i;
+                    }
+                }
+
+                // replace the worst entry if the new trade is better
+                if (_isBetter(profitPercentage, timestamp, tradeVolumeUSD, lb.entries[worstIndex])) {
+                    lb.entries[worstIndex] = LeaderboardEntry(trader, profitPercentage, tradeVolumeUSD, timestamp);
+                } else {
+                    return;
+                }
+            }
+        }
+        // re-sort the leaderboard in descending order / best first
+        for (uint8 i = 0; i < 3; i++) {
+            for (uint8 j = i + 1; j < 3; j++) {
+                if (_isBetter(
+                    lb.entries[j].profitPercentage,
+                    lb.entries[j].timestamp,
+                    lb.entries[j].tradeVolumeUSD,
+                    lb.entries[i]
+                )) {
+                    LeaderboardEntry memory temp = lb.entries[i];
+                    lb.entries[i] = lb.entries[j];
+                    lb.entries[j] = temp;
+                }
+            }
+        }
+    }
+
+    // TODO: NATSPEC
+    // _isBetter compares a new trade (profit, timestamp, volume) against an existing leaderboard entry
+    // It returns true if the new trade is better.
+    // Comparison order:
+    // 1. higher profit percentage wins
+    // 2. if equal, the earlier timestamp wins
+    // 3. if still equal, the higher trade volume wins
+    function _isBetter(
+        int256 profitA,
+        uint256 timestampA,
+        uint256 volumeA,
+        LeaderboardEntry memory entryB
+    ) internal pure returns (bool) {
+        if (entryB.trader == address(0)) {
+            return true;
+        }
+
+        if (profitA > entryB.profitPercentage) {
+            return true;
+        } else if (profitA < entryB.profitPercentage) {
+            return false;
+        }
+
+        if (timestampA < entryB.timestamp) {
+            return true;
+        } else if (timestampA > entryB.timestamp) {
+            return false;
+        }
+
+        if (volumeA > entryB.tradeVolumeUSD) {
+            return true;
+        }
+
+        return false;
+    }
+
     // TODO: NATSPEC
     // --- Helper function: Get average gas price from the gasPriceOracle
     function _getAverageGasPrice() internal view returns (uint256) {
@@ -433,447 +571,4 @@ console.log("CONTRACT AS token1PriceUSD ------------------------", token1PriceUS
 
         return price;
     }
-
-    // TODO NATSPEC
-    // function _getPnLParameters(address sender, PoolKey calldata key)
-    //     internal
-    //     returns (
-    //         uint160 sqrtPriceX96After,
-    //         uint256 gasUsed,
-    //         uint256 gasPrice,
-    //         uint160 sqrtPriceX96Before
-    //     )
-    // {
-    //     (sqrtPriceX96After,,,) = manager.getSlot0(key.toId());
-    //     // Retrieve stored gas data from before swap
-    //     SwapGasTracking memory tracking = swapGasTracker[sender];
-    //     gasUsed = tracking.gasStart - gasleft();
-    //     gasPrice = tx.gasprice;
-    //     sqrtPriceX96Before = tracking.sqrtPriceX96Before;
-    // }
-
-    // // TODO NATSPEC
-    // function _computeTokenChanges(
-    //     address trader,
-    //     PoolKey calldata key,
-    //     bool zeroForOne,
-    //     uint256 token0BeforeBal,
-    //     uint256 token1BeforeBal
-    // ) internal
-    //   view
-    //   returns (uint256 token0Change, uint256 token1Change)
-    // {
-    //     ERC20 erc0 = ERC20(Currency.unwrap(key.currency0));
-    //     ERC20 erc1 = ERC20(Currency.unwrap(key.currency1));
-
-    //     console.log("CONTRACT COMPUTE TOKEN CHANGES token0BeforeBal,", token0BeforeBal);
-    //     console.log("CONTRACT COMPUTE TOKEN CHANGES token1BeforeBal", token1BeforeBal);
-
-    //     uint256 token0After = erc0.balanceOf(trader);
-    //     uint256 token1After = erc1.balanceOf(trader);
-    //     console.log("CONTRACT COMPUTE TOKEN CHANGES token0After", token0After);
-    //     console.log("CONTRACT COMPUTE TOKEN CHANGES token1After", token1After);
-
-    //     // compute how many tokens the user actually spent / gained
-    //     if (zeroForOne) {
-    //         // user spent token0, gained token1
-    //         token0Change = (token0BeforeBal > token0After) ? (token0BeforeBal - token0After) : 0;
-    //         token1Change = (token1After > token1BeforeBal) ? (token1After - token1BeforeBal) : 0;
-    //     } else {
-    //         // user spent token1, gained token0
-    //         token0Change = (token0After > token0BeforeBal) ? (token0After - token0BeforeBal) : 0;
-    //         token1Change = (token1BeforeBal > token1After) ? (token1BeforeBal - token1After) : 0;
-    //     }
-
-    //     // logs to show smaller deltas ***
-    //     // e.g. scaled by 1e18 for readability if tokens have 18 decimals
-    //     if (token0Change > 0) {
-    //         console.log(
-    //             "DexProfitWars: token0Spent (scaled) =",
-    //             token0Change / 1e18
-    //         );
-    //     }
-    //     if (token1Change > 0) {
-    //         console.log(
-    //             "DexProfitWars: token1Spent (scaled) =",
-    //             token1Change / 1e18
-    //         );
-    //     }
-    // }
-
-    // // TODO: add Natspec
-    // function _getUserBalances(address trader, PoolKey calldata key)
-    //     internal
-    //     view
-    //     returns (uint256 token0Balance, uint256 token1Balance)
-    // {
-    //     ERC20 erc0 = ERC20(Currency.unwrap(key.currency0));
-    //     ERC20 erc1 = ERC20(Currency.unwrap(key.currency1));
-
-    //     token0Balance = erc0.balanceOf(trader);
-    //     token1Balance = erc1.balanceOf(trader);
-    // }
-
-    // // TODO: add Natspec
-    // function _calculateSwapPnL_UserBalances(
-    //     uint256 token0Spent,
-    //     uint256 token1Gained,
-    //     uint160 sqrtPriceX96Before,
-    //     uint160 sqrtPriceX96After,
-    //     uint256 gasUsed,
-    //     uint256 gasPrice,
-    //     bool zeroForOne
-    // )
-    //     internal
-    //     returns (int256 profitPercentage)
-    // {
-    //     // 1. Convert Q96 sqrt price to a real price
-    //     uint256 priceBefore = (uint256(sqrtPriceX96Before) * sqrtPriceX96Before) >> 192;
-    //     uint256 priceAfter  = (uint256(sqrtPriceX96After)  * sqrtPriceX96After)  >> 192;
-
-    //     // 2. Calculate the "value in" and "value out"
-    //     //    If zeroForOne, userSpent token0, gained token1
-    //     //    So valueIn is token0Spent * priceBefore, valueOut is token1Gained * priceAfter
-    //     uint256 valueIn;
-    //     uint256 valueOut;
-
-    //     if (zeroForOne) {
-    //         valueIn  = token0Spent * priceBefore;
-    //         valueOut = token1Gained * priceAfter;
-    //     } else {
-    //         // The inverse: userSpent token1, gained token0
-    //         // price is token1 per token0, so you might invert or handle carefully
-    //         // For simplicity, assume token1Spent * (1 / priceBefore)
-    //         // or do separate oracles for each side
-    //         // ...
-    //     }
-
-    //     // 3. Subtract gas cost
-    //     uint256 gasCostWei = gasUsed * _getGasPrice();
-    //     uint256 gasCostInTokens = _convertGasCostToTokens(gasCostWei, priceBefore);
-    //     if (valueOut <= gasCostInTokens) {
-    //         return -1_000_000; // -100%
-    //     }
-    //     valueOut -= gasCostInTokens;
-
-    //     // 4. Return final percentage
-    //     if (valueOut > valueIn) {
-    //         profitPercentage = int256(((valueOut - valueIn) * 1e6) / valueIn);
-    //     } else {
-    //         profitPercentage = -int256(((valueIn - valueOut) * 1e6) / valueIn);
-    //     }
-    //     console.log("CONTRACT profitPercentage", profitPercentage);
-    //     return profitPercentage;
-    // }
-
-    // /**
-    //  * @notice Updates trader statistics after a profitable trade.
-    //  *
-    //  * @param trader                        The address of the trader.
-    //  * @param profitPercentage              The calculated profit percentage (scaled by 1e6).
-    //  */
-    // function _updateTraderStats(address trader, int256 profitPercentage) internal {
-    //     TraderStats storage stats = traderStats[trader];
-
-    //     // Update trade counts
-    //     stats.totalTrades++;
-    //     // Only update profitable trade stats if we made it here
-    //     // (we know profit exceeds minimum threshold from afterSwap check)
-    //     // increment if trade is profitable
-    //     if (profitPercentage > 0) { // Make sure this check is working
-    //         stats.profitableTrades++;
-    //     }
-
-    //     // Calculate bonus points based on profit percentage
-    //     uint256 bonusPoints = _calculateBonus(trader, profitPercentage);
-    //     if (bonusPoints > 0) {
-    //         stats.totalBonusPoints += bonusPoints;
-    //         balanceOf[trader] += bonusPoints;
-    //     }
-
-    //     // Update best trade percentage if better
-    //     if (profitPercentage > stats.bestTradePercentage) {
-    //         stats.bestTradePercentage = profitPercentage;
-    //     }
-
-    //     stats.lastTradeTimestamp = block.timestamp;
-
-    //     // REMOVE BELOW !!!
-    //     TraderStats memory stats2 = traderStats[trader];
-    //     console.log("CONTRACT traderStats[trader] totalTrades", stats2.totalTrades);
-    //     console.log("CONTRACT traderStats[trader] profitableTrades", stats2.profitableTrades);
-    //     console.log("CONTRACT traderStats[trader] bestTradePercentage", stats2.bestTradePercentage);
-    //     console.log("CONTRACT traderStats[trader] totalBonusPoints", stats2.totalBonusPoints);
-    //     console.log("CONTRACT traderStats[trader] lastTradeTimestamp", stats2.lastTradeTimestamp);
-    // }
-
-    // /**
-    //  * @notice Calculates the percentage profit/loss for a swap including gas costs.
-    //  *
-    //  * @param delta                         The balance changes from the swap.
-    //  * @param sqrtPriceX96Before            Price before swap in Q96 format.
-    //  * @param sqrtPriceX96After             Price after swap in Q96 format.
-    //  * @param gasUsed                       Amount of gas used in the swap.
-    //  * @param gasPrice                      Current gas price in Wei.
-    //  *
-    //  * @return profitPercentage             The profit/loss as a percentage (scaled by 1e6, where 1_000_000 = 100%)
-    //  */
-    // function _calculateSwapPnL(
-    //     BalanceDelta delta,
-    //     uint160 sqrtPriceX96Before,
-    //     uint160 sqrtPriceX96After,
-    //     uint256 gasUsed,
-    //     uint256 gasPrice
-    // ) internal returns (int256 profitPercentage) {
-    //     // convert Q96 sqrt price to an actual price (token1/token0)
-    //     uint256 priceBefore = (uint256(sqrtPriceX96Before) * sqrtPriceX96Before) >> 192;
-    //     uint256 priceAfter = (uint256(sqrtPriceX96After)  * sqrtPriceX96After)  >> 192;
-    //     console.log("CONTRACT priceBefore", priceBefore);
-    //     console.log("CONTRACT priceAfter", priceAfter);
-
-    //     // Get the int128 values
-    //     int128 amount0 = delta.amount0();
-    //     int128 amount1 = delta.amount1();
-    //     console.log("CONTRACT amount0", amount0);
-    //     console.log("CONTRACT amount1", amount1);
-
-    //     // Get absolute values of tokens swapped
-    //     uint256 tokenInAmount = amount0 > 0 ? uint256(uint128(amount0)) : uint256(uint128(amount1));
-    //     uint256 tokenOutAmount = amount0 > 0 ? uint256(uint128(-amount1)) : uint256(uint128(-amount0));
-    //     console.log("CONTRACT tokenInAmount", tokenInAmount);
-    //     console.log("CONTRACT tokenOutAmount", tokenOutAmount);
-
-    //     // Calculate values (in terms of one token)
-    //     uint256 valueIn = tokenInAmount * priceBefore;
-    //     uint256 valueOut = tokenOutAmount * priceAfter;
-    //     console.log("CONTRACT valueIn", valueIn);
-    //     console.log("CONTRACT valueOut", valueOut);
-
-    //     // Calculate gas costs
-    //     uint256 gasCostWei = gasUsed * _getGasPrice();
-    //     uint256 gasCostInTokens = _convertGasCostToTokens(gasCostWei, priceBefore);
-    //     console.log("CONTRACT gasCostWei", gasCostWei);
-    //     console.log("CONTRACT gasCostInTokens", gasCostInTokens);
-
-    //     // Subtract gas costs from value out
-    //     if (valueOut > gasCostInTokens) {
-    //         valueOut -= gasCostInTokens;
-    //     } else {
-    //         // If gas costs exceed value out, trade is a loss
-    //         return -1_000_000; // -100%
-    //     }
-
-    //     // Calculate percentage profit/loss
-    //     // Scale by 1e6 for precision (100% = 1_000_000)
-    //     if (valueOut > valueIn) {
-    //         profitPercentage = int256(((valueOut - valueIn) * 1e6) / valueIn);
-    //     } else {
-    //         profitPercentage = -int256(((valueIn - valueOut) * 1e6) / valueIn);
-    //     }
-    // }
-
-    // /**
-    //  * @notice Gets the current gas price with caching to optimize gas costs.
-    //  *         Updates cache only if the current cache is older than GAS_PRICE_UPDATE_INTERVAL.
-    //  *
-    //  * @return                              Current gas price in Wei, either fresh or cached value.
-    //  *
-    //  * @dev Uses a caching mechanism to reduce the frequency of storage updates:
-    //  *      - Updates cache only after GAS_PRICE_UPDATE_INTERVAL (1 hour)
-    //  *      - Returns cached value if within update interval
-    //  */
-    // function _getGasPrice() internal returns (uint256) {
-    //     if (block.timestamp >= lastGasPriceUpdate + GAS_PRICE_UPDATE_INTERVAL) {
-    //         // Update cache with current gas price
-    //         cachedGasPrice = tx.gasprice;
-    //         // Record update timestamp
-    //         lastGasPriceUpdate = block.timestamp;
-    //         // Return fresh value
-    //         return cachedGasPrice;
-    //     }
-
-    //     // Return cached value if still valid
-    //     return cachedGasPrice;
-    // }
-
-    // /**
-    //  * TODO: ADD Natspec
-    //  */
-    // function _calculateBonus(address trader, int256 currentProfitPercentage)
-    //     internal
-    //     view
-    //     returns (uint256)
-    // {
-    //     // First check if profit is positive and convert to uint256 if it is
-    //     // if yes then convert to uint256 for comparison with MINIMUM_PROFIT_BPS
-    //     // profit in bps (1% = 100)
-    //     if (currentProfitPercentage <= 0 || uint256(currentProfitPercentage) < MINIMUM_PROFIT_BPS) {
-    //         return 0; // No bonus for negative profits or trades below 2% profit
-    //     }
-
-    //     TraderStats memory stats = traderStats[trader];
-    //     // Check if we're still within the bonus window
-    //     bool isWithinWindow = (block.timestamp - stats.lastTradeTimestamp) <= BONUS_WINDOW;
-
-    //     // Use the best trade percentage from the window for bonus calculation
-    //     int256 profitForBonus = isWithinWindow ?
-    //         (currentProfitPercentage > stats.bestTradePercentage ? currentProfitPercentage : stats.bestTradePercentage) :
-    //         currentProfitPercentage;
-
-    //     // Convert basis points to percentage (divide by 100)
-    //     uint256 bonus = uint256(profitForBonus) * BASE_BONUS_RATE / 100;
-
-    //     return bonus;
-    // }
-
-    // /**
-    //  * @notice Converts gas costs in Wei to token value with thresholds.
-    //  *
-    //  * @param gasCostWei                    Gas cost in Wei.
-    //  * @param priceX96                      Current pool price in Q96 format.
-    //  *
-    //  * @return tokenCost                    Gas cost converted to token value.
-    //  *
-    //  * @dev Applies two thresholds:
-    //  *      - Maximum USD value (MAX_GAS_COST_USD)
-    //  *      - Maximum percentage of trade value (MAX_GAS_COST_BASIS_POINTS)
-    //  *      Returns the lower of the two limits
-    //  */
-    // function _convertGasCostToTokens(uint256 gasCostWei, uint256 priceX96)
-    //     internal
-    //     view
-    //     returns (uint256 tokenCost)
-    // {
-    //     // Get normalized prices from oracles
-    //     // Gets validated ETH/USD price
-    //     uint256 ethUsdPrice = _getSafeOraclePrice(ethUsdOracle, ethUsdDecimals);
-    //     // Gets validated token/USD price
-    //     uint256 tokenUsdPrice = _getSafeOraclePrice(token0UsdOracle, token0UsdDecimals);
-
-    //     // Converts gas cost from Wei to USD
-    //     uint256 gasCostUsd = (gasCostWei * ethUsdPrice) / 1e18;
-
-    //     // First threshold check: Caps gas cost at maximum USD value
-    //     if (gasCostUsd > MAX_GAS_COST_USD) {
-    //         gasCostUsd = MAX_GAS_COST_USD;
-    //     }
-
-    //     // Convert USD gas cost to token amount
-    //     tokenCost = (gasCostUsd * 1e18) / tokenUsdPrice;
-
-    //     // Scales result to Q96 format for pool compatibility
-    //     tokenCost = (tokenCost * priceX96) >> 96;
-    // }
-
-    // /**
-    //  * @notice Calculates the USD value of a trade using oracle prices.
-    //  *
-    //  * @param delta                         The balance changes from the swap.
-    //  *
-    //  * @return                              The USD value of the trade.
-    //  */
-    // function _calculateTradeValueUsd(BalanceDelta delta) internal view returns (uint256) {
-    //     // Get the int128 values
-    //     int128 amount0 = delta.amount0();
-    //     int128 amount1 = delta.amount1();
-
-    //     // Get token amounts
-    //     uint256 tokenAmount0 = amount0 > 0 ? uint256(uint128(amount0)) : uint256(uint128(-amount0));
-    //     uint256 tokenAmount1 = amount1 > 0 ? uint256(uint128(amount1)) : uint256(uint128(-amount1));
-
-    //     // Get token prices in USD
-    //     uint256 token0Price = _getSafeOraclePrice(token0UsdOracle, token0UsdDecimals);
-    //     uint256 token1Price = _getSafeOraclePrice(token1UsdOracle, token1UsdDecimals);
-
-    //     // Calculate total value (taking larger of the two values)
-    //     uint256 value0 = (tokenAmount0 * token0Price) / 1e18;
-    //     uint256 value1 = (tokenAmount1 * token1Price) / 1e18;
-
-    //     return value0 > value1 ? value0 : value1;
-    // }
-
-    // /**
-    //  * @notice Retrieves and validates the latest price from a Chainlink oracle,
-    //  *         ensuring the price is fresh and normalizing to 18 decimals.
-    //  *
-    //  * @param oracle                        The Chainlink price feed aggregator interface.
-    //  * @param decimals                      The number of decimals used by the oracle.
-    //  *
-    //  * @return                              The normalized price with 18 decimals.
-    //  *
-    //  * @dev Reverts if:
-    //  *      - Price is stale (older than MAX_ORACLE_AGE)
-    //  *      - Round is not complete
-    //  *      - Price is zero or negative
-    //  *      - Normalized price is zero
-    //  */
-    // function _getSafeOraclePrice(AggregatorV3Interface oracle, uint8 decimals) internal view returns (uint256) {
-    //     // Get latest price data from oracle
-    //     (
-    //         uint80 roundId,
-    //         int256 price,
-    //         , // Unused startedAt timestamp
-    //         uint256 updatedAt,
-    //         uint80 answeredInRound
-    //     ) = oracle.latestRoundData(); // Gets latest price data from Chainlink oracle
-
-    //     // Check if price is stale
-    //     if (block.timestamp - updatedAt > MAX_ORACLE_AGE) {
-    //         // Checks if price is too old
-    //         revert DPW_StalePrice(updatedAt);
-    //     }
-
-    //     // Ensure round is complete
-    //     if (answeredInRound < roundId) {
-    //         revert DPW_StalePrice(updatedAt);
-    //     }
-
-    //     // Validate price is positive
-    //     if (price <= 0) {
-    //         revert DPW_InvalidPrice(price);
-    //     }
-
-    //     // Normalize to 18 decimals
-    //     uint256 normalizedPrice;
-    //     if (decimals < 18) {
-    //         normalizedPrice = uint256(price) * 10 ** (18 - decimals); // Multiplies up if oracle uses fewer decimals
-    //     } else if (decimals > 18) {
-    //         normalizedPrice = uint256(price) / 10 ** (decimals - 18); // Divides down if oracle uses more decimals
-    //     } else {
-    //         normalizedPrice = uint256(price); // Uses price as-is if already 18 decimals
-    //     }
-
-    //     // Final validation of normalized price
-    //     if (normalizedPrice == 0) revert DPW_InvalidPrice(price);
-
-    //     return normalizedPrice;
-    // }
-
-    // /**
-    //  * @notice Helper function to round a tick down to the nearest usable tick.
-    //  *
-    //  * @param tick                         The original tick value.
-    //  * @param tickSpacing                  The tick spacing for the pool.
-    //  *
-    //  * @return                             The rounded-down tick.
-    // */
-    // function getLowerUsableTick(int24 tick, int24 tickSpacing) public pure returns (int24) {
-    //     int24 intervals = tick / tickSpacing;
-    //     if (tick < 0 && tick % tickSpacing != 0) intervals--; // round toward negative infinity
-    //     return intervals * tickSpacing;
-    // }
-
-    // // TODO NATSPEC
-    // function _settle(Currency currency, uint128 amount) internal {
-    //     // transfer tokens to PM and let it know
-    //     poolManager.sync(currency);
-    //     currency.transfer(address(poolManager), amount);
-    //     poolManager.settle();
-    // }
-
-    // // TODO NATSPEC
-    // function _take(Currency currency, uint128 amount) internal {
-    //     // take tokens out of PM to our hook contract
-    //     poolManager.take(currency, address(this), amount);
-    // }
 }

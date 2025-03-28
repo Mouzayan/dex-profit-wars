@@ -79,7 +79,7 @@ contract DexProfitWarsTest is Test, Deployers {
     bool constant ZERO_FOR_ONE = true; // user trading token0 for token1
 
     // set GAS_PRICE in wei (15 gwei = 15e9 wei)
-    uint256 constant GAS_PRICE = 15e9; // 15 gwei in wei
+    uint256 constant GAS_PRICE = 15e9;
 
     function setUp() public {
         // deploy PoolManager and Router contracts
@@ -262,161 +262,66 @@ contract DexProfitWarsTest is Test, Deployers {
 
         vm.stopPrank();
     }
+    // forge test --match-path test/DexProfitWars.t.sol --match-test test_twoProfitableSwaps -vvv
+    function test_twoProfitableSwaps() public {
+        vm.startPrank(USER);
 
-    // to run specific test: forge test --match-path test/DexProfitWars.t.sol --match-test test_calculateSwapPnL_Unprofitable -vvv
-    // Test Profit Calculation and Gas Costs
-    function test_calculateSwapPnL_Loss() public {
-        console.log("!!! TEST calculateSwapPnL_Loss");
-        vm.prank(USER);
-        uint256 userToken0Before = token0.balanceOf(USER);
-        uint256 userToken1Before = token1.balanceOf(USER);
+        // approve tokens for swapping
+        MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), type(uint256).max);
+        MockERC20(Currency.unwrap(token0)).approve(address(swapRouter), type(uint256).max);
 
-        bytes memory hookData = abi.encode(
-            USER,
-            userToken0Before,
-            userToken1Before
-        );
+        // --------- first swap ---------
+        // get the current pool tick
+        ( , int24 currentTick, ,) = manager.getSlot0(key.toId());
+        int24 tickLimit = currentTick - 10;
+        uint160 sqrtPriceLimitX96 = TickMath.getSqrtPriceAtTick(tickLimit);
 
-        // Do a swap that should be profitable
-        swapRouter.swap(
-            key,
-            IPoolManager.SwapParams({
-                zeroForOne: ZERO_FOR_ONE,
-                amountSpecified: -SEND_VALUE_SMALL,  // Exact input: spending 0.01 token0
-                sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
-            }),
-            PoolSwapTest.TestSettings({
-                takeClaims: false,
-                settleUsingBurn: false
-            }),
-            hookData
-        );
-        console.log("!!! TEST token0 balance of TEST AFTER:", token0.balanceOf(USER));
-        console.log("!!! TEST token1 balance of TEST AFTER:", token1.balanceOf(USER));
-        console.log("TEST block.timestamp", block.timestamp);
-        // Get trader stats after swap
-        (
-            uint256 totalTrades,
-            uint256 profitableTrades,
-            int256 bestTradePercentage,
-            uint256 totalBonusPoints,
-            uint256 lastTradeTimestamp
-        ) = hook.getTraderStats(USER);
-        console.log("TEST totalTrades", totalTrades);
-        console.log("TEST Best trade percentage (bps)", bestTradePercentage);
-        console.log("TEST Profitable trades", profitableTrades);
-        console.log("TEST Stats totalBonusPoints", totalBonusPoints);
-        console.log("TEST Stats lastTradeTimestamp", lastTradeTimestamp);
+        PoolSwapTest.TestSettings memory testSettings = PoolSwapTest.TestSettings({
+            takeClaims: false,
+            settleUsingBurn: false
+        });
 
-        // Assertions
+        // build swap params
+        IPoolManager.SwapParams memory params1 = IPoolManager.SwapParams({
+            zeroForOne: ZERO_FOR_ONE,
+            amountSpecified: -int256(70e18),
+            sqrtPriceLimitX96: sqrtPriceLimitX96
+        });
+        // build hook data
+        bytes memory hookData = abi.encode(USER);
+
+        // execute first swap
+        swapRouter.swap(key, params1, testSettings, hookData);
+
+        // check trader stats
+        (uint256 totalTrades1, uint256 profitableTrades1, int256 bestTradePercentage1, ,) = hook.getTraderStats(USER);
+        assertEq(totalTrades1, 1);
+        assertEq(profitableTrades1, 1);
+        assertGt(bestTradePercentage1, 0);
+
+        // --------- second swap ---------
+        // get the updated tick from the pool after the first swap
+        ( , int24 currentTick2, ,) = manager.getSlot0(key.toId());
+        int24 tickLimit2 = currentTick2 - 10;
+        uint160 sqrtPriceLimitX96_2 = TickMath.getSqrtPriceAtTick(tickLimit2);
+
+        // build swap params
+        IPoolManager.SwapParams memory params2 = IPoolManager.SwapParams({
+            zeroForOne: ZERO_FOR_ONE,
+            amountSpecified: -int256(50e18),
+            sqrtPriceLimitX96: sqrtPriceLimitX96_2
+        });
+
+        // execute the second swap
+        swapRouter.swap(key, params2, testSettings, hookData);
+
+        // check trader stats after first swap
+        (uint256 totalTrades, uint256 profitableTrades, int256 bestTradePercentage, ,) = hook.getTraderStats(USER);
         assertEq(totalTrades, 2);
-        assertEq(profitableTrades, 0);
-        assertEq(bestTradePercentage, 0, "No profitable trade");
-        assertTrue(
-            bestTradePercentage <= int256(MINIMUM_PROFIT_BPS),
-            "Profit should not meet minimum threshold"
-        );
-
-        // Test that gas costs were properly factored in
-        uint256 balanceAfter = token1.balanceOf(USER);
-        uint256 amountReceived = balanceAfter - userToken1Before;
-        console.log("TEST Amount received", amountReceived);
+        assertEq(profitableTrades, 2);
+        // best trade percentage is updated to the highest one
+        assertGe(bestTradePercentage, bestTradePercentage1);
+console.log("TEST bestTradePercentage -------------------------", bestTradePercentage);
+        vm.stopPrank();
     }
-
-    // forge test --match-path test/DexProfitWars.t.sol --match-test test_calculateSwapPnL_Profitable -vvv
-    // function test_calculateSwapPnL_Profit() public {
-    //     console.log("!!! TEST Contract ADDRESS", address(this));
-    //     console.log("!!! TEST calculateSwapPnL_PROFIT");
-
-    //     vm.startPrank(USER);
-    //     // approve tokens
-    //     MockERC20(Currency.unwrap(token0)).approve(address(manager), type(uint256).max);
-    //     MockERC20(Currency.unwrap(token1)).approve(address(manager), type(uint256).max);
-    //     MockERC20(Currency.unwrap(token0)).approve(address(hook), type(uint256).max);
-    //     MockERC20(Currency.unwrap(token1)).approve(address(hook), type(uint256).max);
-
-    //     uint256 userToken0Before = token0.balanceOf(USER);
-    //     uint256 userToken1Before = token1.balanceOf(USER);
-
-    //     bytes memory hookData = abi.encode(
-    //         USER,
-    //         userToken0Before,
-    //         userToken1Before
-    //     );
-
-    //     hook.makeTrade(key, -50, true, uint256(SEND_VALUE_LARGE));
-
-    //     vm.stopPrank();
-    //     // Verify the swap worked
-    //     assertLt(token0.balanceOf(USER), userToken0Before, "User should have spent token0");
-    //     assertGt(token1.balanceOf(USER), userToken1Before, "User should have received token1");
-
-    //     console.log("TEST block.timestamp", block.timestamp);
-
-    //     console.log("!!! TEST token0 balance of TEST AFTER:", token0.balanceOf(USER));
-    //     console.log("!!! TEST token1 balance of TEST AFTER:", token1.balanceOf(USER));
-    //     // Get trader stats after swap
-    //     DexProfitWars.TraderStats memory stats = hook.getTraderStats(USER);
-    //     console.log("TEST USER", USER);
-    //     console.log("TEST totalTrades", stats.totalTrades);
-    //     console.log("TEST Best trade percentage (bps)", stats.bestTradePercentage);
-    //     console.log("TEST Profitable trades", stats.profitableTrades);
-    //     console.log("TEST Stats totalBonusPoints", stats.totalBonusPoints);
-    //     console.log("TEST Stats lastTradeTimestamp", stats.lastTradeTimestamp);
-
-    //     // Assertions
-    //     assertEq(stats.totalTrades, 1);
-    //     assertEq(stats.profitableTrades, 0);
-    //     assertEq(stats.bestTradePercentage, 0, "No profitable trade");
-    //     assertTrue(
-    //         stats.bestTradePercentage <= int256(MINIMUM_PROFIT_BPS),
-    //         "Profit should not meet minimum threshold"
-    //     );
-
-    //     uint256 userToken0After = token0.balanceOf(USER);
-    //     assertLt(userToken0After, userToken0Before, "User should have spent token0");
-
-    //     uint256 balanceAfter = token1.balanceOf(USER);
-    //     uint256 amountReceived = balanceAfter - userToken1Before;
-    //     console.log("TEST token1 balanceAfter", balanceAfter);
-    //     console.log("TEST Amount received", amountReceived);
-    // }
-
-    function test_abd1() public {} // Verify gas costs are correctly subtracted from profits
-    function test_abd2() public {} // Test the 2% minimum profit threshold
-    function test_abd3() public {} // Test negative profit / loss scenario
-
-    // Bonus Point System
-    function test_calculateBonus() public {}
-    function test_calculateBonus1() public {} // Verify bonus points are awarded correctly based on profit percentage
-    function test_calculateBonus2() public {} // Test the 2-day window mechanism
-    function test_calculateBonus3() public {} // Test best trade percentage tracking
-
-    // Trader Statistics
-    function test_updateTraderStats() public {}
-    function test_updateTraderStats1() public {} // totalTrades counter
-    function test_updateTraderStats2() public {} // profitableTrades counter
-    function test_updateTraderStat3() public {} // bestTradePercentage updates
-    function test_updateTraderStats4() public {} // totalBonusPoints accumulation
-    function test_updateTraderStats5() public {} // lastTradeTimestamp updates
-
-    // Gas Price Caching
-    function test_getGasPrice() public {} // caching mechanism
-    function test_getGasPrice1() public {} // test cache update intervals
-
-    // Full swap flow
-    function test_beforeSwap() public {} // state recording
-    function test_afterSwap() public {} // calculations
-    function test_swapFlow() public {} // Test complete flow from swap initiation to bonus award
-
-    // Trading Windows
-    function test_bestTrades() public {} // Test trades within same 2-day window
-    function test_bestTrades1() public {} // Test trades across different windows
-    function test_bestTrades2() public {} // Test best trade percentage persistence
-
-    // Edge Cases
-    function test_gasExceedsTradeValue() public {} // Test gas costs exceeding trade value
-    function test_gasExceedsTradeValue1() public {} // Test trades just above/below minimum profit threshold
-    function test_gasExceedsTradeValue2() public {} // Test timestamp edge cases for windows
-
 }
