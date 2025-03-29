@@ -1,69 +1,89 @@
-## DexProfitWars
+# DexProfitWars
 
-**DexProfitWars** is a gamified trading enhancement hook that rewards traders with bonus tokens funded by sponsors. Sponsors (protocols, DAOs, or projects) deposit tokens into bonus pools in the hook and define custom reward parameters for the trading pair.
-When traders execute profitable swaps that meet the sponsor's criteria, they automatically receive a bonus of up to 10% on their traded amounts, drawn from the sponsor's bonus pool. Sponsors customize their reward mechanics by setting minimum trade sizes, specific trading windows, and variable bonus rates based on profit margins.
+DexProfitWars is a smart contract designed as a Uniswap V4 hook that gamifies trading contests by tracking trader performance using USD-based profit calculations. The contract converts trade values using on-chain oracle price feeds (for ETH, token0, token1, and gas prices) to ensure fair, cross-token comparisons. It maintains a gas-efficient leaderboard of the top three trades in each 2‑day contest, laying the groundwork for future reward distribution and advanced applications.
 
-For example, a sponsor might offer a 5% bonus for trades with 1-3% profit margins, scaling up to 10% for trades exceeding 5% profit.
-This creates a fun, tournament-like atmosphere around everyday trading while providing sponsors with a way to incentivize liquidity and engagement with their token pairs.
-The mechanism could play into memecoin launches / airdrops etc..
+## Features
 
-Sybil resistance problem:
-Since the hook is public if you get value from it there’s an incentive to spin up lots of accounts and then use them to drain the incentives pool.
-Need to think about how to id qualified users from their wallet address, and how you to filter out abuse.
+- **Trading Contests:**
+  Run periodic 2‑day contests where only trades achieving over a 2% profit threshold (in basis points) qualify for leaderboard ranking.
 
--   **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
--   **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
--   **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
--   **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+- **USD-Based Profit Calculation:**
+  Converts trade amounts to USD using real-time oracle data for ETH, token0, token1, and gas prices. This standardization allows fair comparisons across different token pairs.
+
+- **Leaderboard Management:**
+  Maintains a fixed-size array of 3 winners per contest. The leaderboard is updated by:
+  - Checking if a trader already has an entry and updating it only if the new trade is superior.
+  - Inserting a new entry if there is an available slot or if the new trade outperforms the worst existing entry.
+  - Resolving ties by comparing profit percentages first, then by earlier trade timestamps, and finally by higher trade volume in USD.
+
+- **Oracle Integration and Caching:**
+  Fetches current pricing data from Chainlink oracles, with updates at defined intervals to balance data freshness and gas efficiency. The fetched data is cached to minimize repetitive on-chain computations.
+
+- **Future Enhancements:**
+  Designed to evolve with features like reward distribution for winners, support for airdrops, memecoin launches, and copy-trading platforms where users can opt in to replicate high-performing trades for a fee.
+
+- **Decimal Assumptions:**
+  The contract currently assumes all tokens have 18 decimals for simplicity in conversion. Future iterations will accommodate tokens with varying decimal precisions.
+
+## Project Structure
+
+This repository is a Forge project and includes the following key directories:
+- **`src/`**: Contains the Solidity smart contract source code.
+- **`test/`**: Contains the test suite for the smart contract.
+
+## Prerequisites
+
+Ensure you have [Foundry](https://github.com/foundry-rs/foundry) installed. Foundry is a fast and modular toolkit for Ethereum development.
+
+To install Foundry, run:
+```bash
+curl -L https://foundry.paradigm.xyz | bash
+foundryup
+```
+
+## Building the Project
+
+Compile the contracts using:
+```
+forge build
+```
+
+## Running Tests
+
+Execute the test suite with:
+```
+forge test
+```
 
 ## Usage
 
-### Build
+- **Contest Control:**
+  The contract owner can start and stop trading contests. Each contest lasts for 2 days, during which eligible trades update the leaderboard.
 
-```shell
-$ forge build
-```
+- **Leaderboard Updates:**
+  When a trade qualifies (exceeding the minimum profit threshold), the leaderboard is updated by checking for existing trader entries, inserting new ones if space is available, or replacing the worst entry if the new trade is superior. Ties are resolved by comparing profit percentage first, then trade timestamp, and finally trade volume.
 
-### Test
+- **Oracle Price Updates:**
+  Oracles fetch real-time prices for ETH, token0, token1, and gas. The data is cached and refreshed at a set interval to maintain efficiency and accuracy in profit calculations.
 
-```shell
-$ forge test
-```
+## Future Enhancements
 
-### Format
+- **Reward Distribution:**
+  Future updates will implement a mechanism where winners can earn token rewards, incentivizing participation.
 
-```shell
-$ forge fmt
-```
+- **Advanced Applications:**
+  The leaderboard system can be extended to applications such as:
+  - **Airdrops & Memecoin Launches:** Rewarding top traders or generating buzz around new tokens.
+  - **Copy-Trading Platforms:** Allowing users to automatically replicate high-performing trades for a fee.
 
-### Gas Snapshots
+- **Decimal Flexibility:**
+  Future iterations will accommodate tokens with varying decimal places to support a broader range of assets accurately.
 
-```shell
-$ forge snapshot
-```
+## License
 
-### Anvil
+This project is licensed under the **UNLICENSED** License.
 
-```shell
-$ anvil
-```
+## Acknowledgements
 
-### Deploy
-
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+- Built using the Foundry toolkit for Ethereum development.
+- Inspired by the need for gamified trading and equitable performance evaluation across token pairs :heart:
