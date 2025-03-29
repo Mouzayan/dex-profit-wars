@@ -83,7 +83,6 @@ contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
     event OracleCacheUpdated(uint64 timestamp);
 
     // ===================== Structures =====================
-    // struct to track trader statistics
     struct TraderStats {
         uint128 totalTrades;
         uint128 profitableTrades;
@@ -115,11 +114,9 @@ contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
     uint128 public currentContestId;
 
     IPoolManager public immutable manager;
-    // the current contest leaderboard
     Leaderboard private currentLeaderboard;
 
     // ====================== Constants ====================
-    // constants DOES THIS NEED TO BE PRIVATE?
     // 2% profit minimum profit threshold expressed in basis points
     uint256 constant MINIMUM_PROFIT_BPS = 200;
     // using multiplier 1e4 so 2% = 200 bps
@@ -130,17 +127,14 @@ contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
     uint256 constant ONE_SQUARED = 1e36;
     uint256 constant CONTEST_DURATION = 2 days;
     uint256 public constant ORACLE_CACHE_INTERVAL = 1 minutes;
-    // maximum age for oracle data
     uint256 public constant MAX_ORACLE_AGE = 1 hours;
 
-    // price oracle interfaces
     AggregatorV3Interface public immutable gasPriceOracle;
     AggregatorV3Interface public immutable token0PriceOracle; // token0 price in USD
     AggregatorV3Interface public immutable token1PriceOracle; // token1 price in USD
     AggregatorV3Interface public immutable ethUsdOracle;
 
     // ====================== Immutables ====================
-    // oracle decimals
     uint8 private immutable gasPriceOracleDecimals;
     uint8 private immutable token0PriceOracleDecimals;
     uint8 private immutable token1PriceOracleDecimals;
