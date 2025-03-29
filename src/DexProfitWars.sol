@@ -4,6 +4,7 @@ pragma solidity 0.8.26;
 import {console} from "forge-std/Test.sol"; // REMOVE
 import {AggregatorV3Interface} from "chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 import {Ownable} from "v4-periphery/lib/permit2/lib/openzeppelin-contracts/contracts/access/Ownable.sol";
+import {ReentrancyGuard} from "v4-periphery/lib/permit2/lib/solmate/src/utils/ReentrancyGuard.sol";
 
 import {BaseHook} from "v4-periphery/src/utils/BaseHook.sol";
 
@@ -92,8 +93,22 @@ import {Hooks} from "v4-core/libraries/Hooks.sol";
  *         - Add events, add custom errors
  *         - Reentrancy, CEI ??
  */
-contract DexProfitWars is BaseHook, Ownable {
+contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
     using BalanceDeltaLibrary for BalanceDelta;
+
+    // ========================= Events =========================
+    event ContestStarted(uint256 indexed contestId, uint256 contestEndTime);
+    event ContestEnded(uint256 indexed contestId);
+    event LeaderboardUpdated(address indexed trader, int256 profitPercentage, uint256 tradeVolumeUSD, uint256 timestamp);
+    event TraderStatsUpdated(
+        address indexed trader,
+        uint256 totalTrades,
+        uint256 profitableTrades,
+        int256 bestTradePercentage,
+        uint256 totalBonusPoints,
+        uint256 lastTradeTimestamp
+    );
+    event OracleCacheUpdated(uint256 timestamp);
 
     // ===================== Structures =====================
     // struct to track trader statistics
@@ -131,7 +146,7 @@ contract DexProfitWars is BaseHook, Ownable {
     uint256 public contestEndTime;
     uint256 public currentContestId;
 
-    IPoolManager manager;
+    IPoolManager public manager;
     // the current contest leaderboard
     Leaderboard private currentLeaderboard;
 
@@ -143,9 +158,12 @@ contract DexProfitWars is BaseHook, Ownable {
     uint256 constant BPS_MULTIPLIER = 1e4;
     // fixed-point 1.0 with 18 decimals
     uint256 constant ONE = 1e18;
-    // 1e18 * 1e18
+    // ONE * ONE
     uint256 constant ONE_SQUARED = 1e36;
     uint256 constant CONTEST_DURATION = 2 days;
+    uint256 public constant ORACLE_CACHE_INTERVAL = 1 minutes;
+    // maximum age for oracle data
+    uint256 public constant MAX_ORACLE_AGE = 1 hours;
 
     // price oracle interfaces
     AggregatorV3Interface public gasPriceOracle;
@@ -166,12 +184,6 @@ contract DexProfitWars is BaseHook, Ownable {
     uint256 private cachedToken0PriceUSD;
     uint256 private cachedToken1PriceUSD;
     uint256 private lastOracleCacheUpdate;
-    uint256 constant ORACLE_CACHE_INTERVAL = 1 minutes;
-
-    // ============================================= ERRORS =============================================
-    // Create separate errors file
-    // error DPW_StalePrice(uint256 timestamp);
-    // error DPW_InvalidPrice(int256 price);
 
     // ========================================== CONSTRUCTOR ===========================================
     // /** FOX NATSPEC
@@ -286,14 +298,14 @@ contract DexProfitWars is BaseHook, Ownable {
         IPoolManager.SwapParams calldata params,
         BalanceDelta delta,
         bytes calldata hookData
-    ) internal override onlyPoolManager returns (bytes4, int128) {
+    ) internal override onlyPoolManager nonReentrant returns (bytes4, int128) {
         // if contest is active but the contest period has ended, archive the contest
         if (contestActive && block.timestamp >= contestEndTime) {
             _archiveCurrentContest();
         }
 
         // decode hookData to get the trader
-        (address trader) = abi.decode(hookData, (address));
+        address trader = abi.decode(hookData, (address));
 
         // retrieve gas snapshot
         uint256 gasBefore = snapshotGas[trader];
@@ -315,11 +327,9 @@ contract DexProfitWars is BaseHook, Ownable {
         uint256 tokensSpent;
         uint256 tokensGained;
         if (params.zeroForOne) {
-            // userSpent = negative of amt0 if amt0 < 0
             tokensSpent = amt0 < 0 ? uint256(uint128(-amt0)) : 0;
             tokensGained = amt1 > 0 ? uint256(uint128(amt1)) : 0;
         } else {
-            // userSpent = negative of amt1 if amt1 < 0
             tokensSpent = amt1 < 0 ? uint256(uint128(-amt1)) : 0;
             tokensGained = amt0 > 0 ? uint256(uint128(amt0)) : 0;
         }
@@ -339,7 +349,9 @@ console.log("CONTRACT token0PriceUSD: ------------------", token0PriceUSD);
 console.log("CONTRACT valueInUSD: --------------", valueInUSD);
         // calculate profit percentage in basis points
         int256 profitPercentage;
-        if (valueOutUSD > valueInUSD + gasCostUSD) {
+        if (valueInUSD == 0) {
+            profitPercentage = 0;
+        } else if (valueOutUSD > valueInUSD + gasCostUSD) {
             profitPercentage = int256(((valueOutUSD - (valueInUSD + gasCostUSD)) * BPS_MULTIPLIER) / valueInUSD);
         } else {
             profitPercentage = -int256((((valueInUSD + gasCostUSD) - valueOutUSD) * BPS_MULTIPLIER) / valueInUSD);
@@ -356,6 +368,14 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
             }
         }
         stats.lastTradeTimestamp = block.timestamp;
+        emit TraderStatsUpdated(
+            trader,
+            stats.totalTrades,
+            stats.profitableTrades,
+            stats.bestTradePercentage,
+            stats.totalBonusPoints,
+            stats.lastTradeTimestamp
+        );
 
         // if contest is active, update the leaderboard for qualifying trades
         if (contestActive && profitPercentage > int256(MINIMUM_PROFIT_BPS)) {
@@ -375,7 +395,7 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
      *
      * @dev Only the owner can start a contest.
      */
-    function startContest() external onlyOwner {
+    function startContest() external onlyOwner nonReentrant {
         require(!contestActive, "Contest already active");
 
         currentContestId++;
@@ -387,6 +407,7 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
         lastOracleCacheUpdate = 0;
 
         _updateOracleCache();
+        emit ContestStarted(currentContestId, contestEndTime);
     }
 
     /** TODO: FIX NATSPEC
@@ -395,10 +416,11 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
      *
      * @dev Only the owner can end a contest.
      */
-    function endContest() external onlyOwner {
+    function endContest() external onlyOwner nonReentrant {
         require(contestActive, "No active contest");
 
         _archiveCurrentContest();
+        emit ContestEnded(currentContestId);
     }
 
     // ========================================= GETTER FUNCTIONS =======================================
@@ -440,34 +462,35 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
     function _updateOracleCache() internal {
         if (block.timestamp - lastOracleCacheUpdate >= ORACLE_CACHE_INTERVAL) {
             // update gas price
-            (, int256 gasAnswer, , ,) = gasPriceOracle.latestRoundData();
+            (, int256 gasAnswer, ,uint256 gasTimestamp,) = gasPriceOracle.latestRoundData();
             require(gasAnswer > 0, "Invalid gas price");
+            require(block.timestamp - gasTimestamp <= MAX_ORACLE_AGE, "Gas price stale");
 
-            uint256 _gasPrice = _scalePrice(uint256(gasAnswer), gasPriceOracleDecimals, 18);
-            cachedGasPrice = _gasPrice;
+            cachedGasPrice = _scalePrice(uint256(gasAnswer), gasPriceOracleDecimals, 18);
 
             // update ETH price
-            (, int256 ethAnswer, , ,) = ethUsdOracle.latestRoundData();
+            (, int256 ethAnswer, ,uint256 ethTimestamp, ) = ethUsdOracle.latestRoundData();
             require(ethAnswer > 0, "Invalid eth price");
+            require(block.timestamp - ethTimestamp <= MAX_ORACLE_AGE, "ETH price stale");
 
-            uint256 _ethPrice = _scalePrice(uint256(ethAnswer), ethUsdOracleDecimals, 18);
-            cachedEthPriceUSD = _ethPrice;
+            cachedEthPriceUSD = _scalePrice(uint256(ethAnswer), ethUsdOracleDecimals, 18);
 
             // update token0 price
-            (, int256 token0Answer, , ,) = token0PriceOracle.latestRoundData();
+            (, int256 token0Answer, ,uint256 token0Timestamp, ) = token0PriceOracle.latestRoundData();
             require(token0Answer > 0, "Invalid token0 price");
+            require(block.timestamp - token0Timestamp <= MAX_ORACLE_AGE, "Token0 price stale");
 
-            uint256 _token0Price = _scalePrice(uint256(token0Answer), token0PriceOracleDecimals, 18);
-            cachedToken0PriceUSD = _token0Price;
+            cachedToken0PriceUSD = _scalePrice(uint256(token0Answer), token0PriceOracleDecimals, 18);
 
             // update token1 price
-            (, int256 token1Answer, , ,) = token1PriceOracle.latestRoundData();
+            (, int256 token1Answer, ,uint256 token1Timestamp, ) = token1PriceOracle.latestRoundData();
             require(token1Answer > 0, "Invalid token1 price");
+            require(block.timestamp - token1Timestamp <= MAX_ORACLE_AGE, "Token1 price stale");
 
-            uint256 _token1Price = _scalePrice(uint256(token1Answer), token1PriceOracleDecimals, 18);
-            cachedToken1PriceUSD = _token1Price;
+            cachedToken1PriceUSD = _scalePrice(uint256(token1Answer), token1PriceOracleDecimals, 18);
 
             lastOracleCacheUpdate = block.timestamp;
+            emit OracleCacheUpdated(lastOracleCacheUpdate);
         }
     }
 
@@ -493,11 +516,12 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
                 break;
             }
         }
-
         if (found) {
             // only update if the new trade is better than the current record
             if (_isBetter(profitPercentage, timestamp, tradeVolumeUSD, lb.entries[indexFound])) {
                 lb.entries[indexFound] = LeaderboardEntry(trader, profitPercentage, tradeVolumeUSD, timestamp);
+
+                emit LeaderboardUpdated(trader, profitPercentage, tradeVolumeUSD, timestamp);
             } else {
                 return;
             }
@@ -508,6 +532,8 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
                 if (lb.entries[i].trader == address(0)) {
                     lb.entries[i] = LeaderboardEntry(trader, profitPercentage, tradeVolumeUSD, timestamp);
                     inserted = true;
+
+                    emit LeaderboardUpdated(trader, profitPercentage, tradeVolumeUSD, timestamp);
                     break;
                 }
             }
@@ -527,6 +553,8 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
                 // replace the worst entry if the new trade is better
                 if (_isBetter(profitPercentage, timestamp, tradeVolumeUSD, lb.entries[worstIndex])) {
                     lb.entries[worstIndex] = LeaderboardEntry(trader, profitPercentage, tradeVolumeUSD, timestamp);
+
+                    emit LeaderboardUpdated(trader, profitPercentage, tradeVolumeUSD, timestamp);
                 } else {
                     return;
                 }
@@ -565,19 +593,16 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
         if (entryB.trader == address(0)) {
             return true;
         }
-
         if (profitA > entryB.profitPercentage) {
             return true;
         } else if (profitA < entryB.profitPercentage) {
             return false;
         }
-
         if (timestampA < entryB.timestamp) {
             return true;
         } else if (timestampA > entryB.timestamp) {
             return false;
         }
-
         if (volumeA > entryB.tradeVolumeUSD) {
             return true;
         }
@@ -605,40 +630,4 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
         // if they are equal
         return price;
     }
-
-    // // TODO: NATSPEC
-    // // --- Helper function: Get average gas price from the gasPriceOracle
-    // function _getAverageGasPrice() internal view returns (uint256) {
-    //     (, int256 answer, , ,) = gasPriceOracle.latestRoundData();
-    //     require(answer > 0, "Invalid gas price");
-
-    //     // convert to uint256 and scale based on the oracle decimals
-    //     uint256 gasPrice = uint256(answer);
-
-    //     // oracle has 8 decimals, scale to 18 decimals:
-    //     if (gasPriceOracleDecimals < 18) {
-    //         gasPrice = gasPrice * (10 ** (18 - gasPriceOracleDecimals));
-    //     } else if (gasPriceOracleDecimals > 18) {
-    //         gasPrice = gasPrice / (10 ** (gasPriceOracleDecimals - 18));
-    //     }
-
-    //     return gasPrice;
-    // }
-
-    // // TODO: NATSPEC
-    // // --- Helper: Get oracle price scaled to 18 decimals ---
-    // function _getOraclePrice(AggregatorV3Interface oracle, uint8 decimals) internal view returns (uint256) {
-    //     (, int256 answer, , , ) = oracle.latestRoundData();
-    //     require(answer > 0, "Invalid price");
-
-    //     uint256 price = uint256(answer);
-
-    //     if (decimals < 18) {
-    //         price = price * (10 ** (18 - decimals));
-    //     } else if (decimals > 18) {
-    //         price = price / (10 ** (decimals - 18));
-    //     }
-
-    //     return price;
-    // }
 }
