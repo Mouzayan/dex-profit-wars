@@ -26,29 +26,8 @@ import {LiquidityAmounts} from "@uniswap/v4-core/test/utils/LiquidityAmounts.sol
 import {MockV3Aggregator} from "./mocks/MockV3Aggregator.sol";
 import {DexProfitWars} from "../src/DexProfitWars.sol";
 
-// TODO: REMOVE CONSOLE.LOGS
+// TODO: REMOVE CONSOLE.LOGS !!!!
 
-/**
- * 1. Test that gas cost calculations correctly apply both USD and percentage-based thresholds
- * (MAX_GAS_COST_USD and MAX_GAS_COST_BASIS_POINTS).
- * 2. Test that oracle price fetching properly validates staleness, normalizes decimals,
- * and handles error cases.
- * 3. Test that trade value calculations correctly determine USD value using the
- * larger of token0/token1 amounts multiplied by their respective oracle prices.
- * 4. Test that profit percentage calculation ((valueOut - valueIn - gasCosts) / valueIn)
- * is accurate and properly scaled by 1e6.
- * 5. Test that trader statistics are only updated when profit exceeds the 2% threshold
- * (2_000_000).
- * 6. Test that trader statistics correctly track totalTrades, profitableTrades,
- * bestTradePercentage, totalProfitUsd, and lastTradeTimestamp.
- * 7. Test that the beforeSwap function properly stores initial gas and price state
- * for the swap.
- * 8. Test that the afterSwap function correctly uses the stored state to calculate final
- * profit/loss.
- * 9. Test edge cases where gas costs exceed trade value or when oracle prices are
- * invalid/stale.
- * 10. Test that multiple trades for the same trader accumulate statistics correctly over time.
- */
 contract DexProfitWarsTest is Test, Deployers {
     using StateLibrary for IPoolManager; // ???? NEEDED??
     using PoolIdLibrary for PoolKey; // ???? NEEDED??
@@ -329,7 +308,6 @@ contract DexProfitWarsTest is Test, Deployers {
         assertEq(profitableTrades, 2);
         // best trade percentage is updated to the highest one
         assertGe(bestTradePercentage, bestTradePercentage1);
-console.log("TEST bestTradePercentage -------------------------", bestTradePercentage);
         vm.stopPrank();
     }
 }

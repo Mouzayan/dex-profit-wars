@@ -17,67 +17,40 @@ import {Hooks} from "v4-core/libraries/Hooks.sol";
 /**
  * @title DexProfitWars
  * @author em_mutable
- * @notice DexProfitWars is a gamified trading enhancement protocol built into a Uniswap V4 hook.
- *         It rewards skilled traders with bonus tokens funded by sponsors. Sponsors (protocols,
- *         DAOs, or projects) deposit reward tokens into the bonus pool and define custom reward
- *         parameters for the specific trading pairs.
+ * @notice DexProfitWars is a Uniswap V4 hook that gamifies trading by running periodic contests
+ *         where traders compete based on their trade profits calculated in USD. Converting trade
+ *         values to USD using on-chain oracle price feeds (for ETH, token0, token1, and gas prices)
+ *         allows for an objective, cross-token comparison of performance. The contest operates over
+ *         a 2‑day window and can be started or stopped at the discretion of the contract owner.
+ *         When a contest is active, any trade that achieves a profit above a 2% threshold (in basis
+ *         points) is eligible to be recorded on the contest leaderboard.
  *
- *         Core Mechanics
- *         Trading Brackets & Rewards:
- *              - Trades are categorized into three size brackets:
- *                  1. Small: 0.01 - 0.1 ETH
- *                  2. Medium: 0.1 - 1 ETH
- *                  3. Large: 1 - 10 ETH
- *              - Each bracket maintains separate leaderboards in the UI
+ *         The leaderboard is maintained as a fixed-size array of 3 winners, ensuring that on-chain
+ *         computations remain gas efficient. Each time an eligible trade is executed, the contract checks
+ *         if the trader already has an entry. If so, it updates the trader's record only if the new trade
+ *         is better. If not, the trade is inserted into the leaderboard if there is an open slot or if it
+ *         outperforms the current worst entry.
+ *         Ties are resolved by comparing profit percentages first, then by the earlier trade timestamp,
+ *         and finally by higher trade volume in USD.
  *
- *         Profit Calculation
- *              - Profit calculation uses percentage-based returns within each bracket:
- *                  - Traders ranked by percentage return on their trades
- *                  - Example: 10% profit on small trade beats 8% profit on large trade
- *                  - Minimum 2% profit required to qualify
+ *         The contract uses oracles to fetch current price data for gas, ETH, token0, and token1. Oracle data
+ *         is updated at defined intervals and validated for freshness to ensure accurate and current pricing;
+ *         once verified, the values are cached to minimize repetitive on-chain computations. Calculating values
+ *         in USD ensures fair comparisons across different token pairs and enables consistent contest performance
+ *         metrics.
  *
- *         Reward Pool Distribution
- *              - Based on total value of the reward pool :
- *                  1. Small Pool (< 1000 USDC equivalent)
- *                      Single winner (100%) or Two winners (70/30)
- *                  2. Standard Pool (1000-10000 USDC equivalent)
- *                      Three winners (50/30/20)
- *                  3. Large Pool (> 10000 USDC equivalent)
- *                      Five winners (40/25/15/12/8)
+ *         This design paves the way for future enhancements, including reward distribution mechanisms where winners
+ *         can earn token rewards to encourage trading in the pair pool and competition.
+ *         Moreover, the leaderboard system and potential reward system, lends itself to various applications
+ *         such as airdrops, memecoin launches, and even copy-trading platforms, where users can opt in to have
+ *         high-performing trades automatically executed on their behalf for a fee.
  *
- *         Sponsor Mechanics:
- *              - One active sponsor pool at a time
- *              - Sponsors provide reward tokens separate from the trading pair
- *              - 48-hour grace period between sponsor transitions
- *              - Unclaimed rewards returnable to sponsor after reward pool expiration
+ * @dev    The contract currently assumes all tokens adhere to an 18-decimal standard for simplicity in value
+ *         conversion. Future iterations will accommodate tokens with different decimal precisions.
  *
- *         Reward Distribution:
- *              - Triggered after:
- *                  - Trading window completion (e.g. 7 days)
- *                  - Mandatory cooldown period (e.g. 24 hours)
- *              - Automatic distribution to qualifying traders
- *              - Rewards paid in sponsor's designated token
+ *         The contract caches oracle data (gas price, ETH price, token0 price, and token1 price) to reduce gas
+ *         costs, with updates occurring at an hourly interval to balance efficiency and data freshness.
  *
- *         Sponsor Customizable Parameters:
- *              - Trading window duration
- *              - Bonus pool size and token
- *              - Trade size limits per bracket
- *              - Minimum profit thresholds
- *              - Cooldown periods
- *
- *         Anti-manipulation safeguards:
- *             1. Trade Controls
- *                 - Bracket-specific size limits
- *                 - Time delays between trades
- *                 - Rate limiting per wallet
- *             2. Economic Security
- *                 - Maximum slippage tolerance
- *                 - Pool utilization limits
- *                 - Minimum profit requirements
- *             3. MEV Protection
- *                 - Distribution delays
- *
- *         This mechanism could play into memecoin launches / airdrops etc..
  */
 contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
     using BalanceDeltaLibrary for BalanceDelta;
