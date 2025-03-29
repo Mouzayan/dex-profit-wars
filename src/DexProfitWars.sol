@@ -95,35 +95,35 @@ contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
     error NoActiveContest();
 
     // ========================= Events =========================
-    event ContestStarted(uint256 indexed contestId, uint256 contestEndTime);
+    event ContestStarted(uint256 indexed contestId, uint64 contestEndTime);
     event ContestEnded(uint256 indexed contestId);
-    event LeaderboardUpdated(address indexed trader, int256 profitPercentage, uint256 tradeVolumeUSD, uint256 timestamp);
+    event LeaderboardUpdated(address indexed trader, int256 profitPercentage, uint128 tradeVolumeUSD, uint64 timestamp);
     event TraderStatsUpdated(
         address indexed trader,
-        uint256 totalTrades,
-        uint256 profitableTrades,
-        int256 bestTradePercentage,
-        uint256 totalBonusPoints,
-        uint256 lastTradeTimestamp
+        uint128 totalTrades,
+        uint128 profitableTrades,
+        int128 bestTradePercentage,
+        uint128 totalBonusPoints,
+        uint64 lastTradeTimestamp
     );
-    event OracleCacheUpdated(uint256 timestamp);
+    event OracleCacheUpdated(uint64 timestamp);
 
     // ===================== Structures =====================
     // struct to track trader statistics
     struct TraderStats {
-        uint256 totalTrades;
-        uint256 profitableTrades;
-        int256 bestTradePercentage; // personal best in basis points
-        uint256 totalBonusPoints;
-        uint256 lastTradeTimestamp;
+        uint128 totalTrades;
+        uint128 profitableTrades;
+        int128 bestTradePercentage; // personal best in basis points
+        uint128 totalBonusPoints;
+        uint64 lastTradeTimestamp;
     }
 
     // pepresents an individual record in the trading contest leaderboard
     struct LeaderboardEntry {
         address trader;
         int256 profitPercentage; // profit in basis points
-        uint256 tradeVolumeUSD;  // trade volume in USD assuming 18 decimals
-        uint256 timestamp;
+        uint128 tradeVolumeUSD;  // trade volume in USD assuming 18 decimals
+        uint64 timestamp;
     }
 
     // the leaderboard for a given contest window holds up to 3 entries
@@ -137,8 +137,8 @@ contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
     mapping(address => TraderStats) public traderStats;
 
     bool public contestActive;
-    uint256 public contestEndTime;
-    uint256 public currentContestId;
+    uint64 public contestEndTime;
+    uint128 public currentContestId;
 
     IPoolManager public immutable manager;
     // the current contest leaderboard
@@ -173,11 +173,11 @@ contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
     uint8 private immutable ethUsdOracleDecimals;
 
     // ==================== Oracle Cashing ===================
-    uint256 private cachedGasPrice;
-    uint256 private cachedEthPriceUSD;
-    uint256 private cachedToken0PriceUSD;
-    uint256 private cachedToken1PriceUSD;
-    uint256 private lastOracleCacheUpdate;
+    uint128 private cachedGasPrice;
+    uint128 private cachedEthPriceUSD;
+    uint128 private cachedToken0PriceUSD;
+    uint128 private cachedToken1PriceUSD;
+    uint64 private lastOracleCacheUpdate;
 
     // ========================================== CONSTRUCTOR ===========================================
     // /** FOX NATSPEC
@@ -306,10 +306,10 @@ contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
 
         // refresh oracle cache if necessary
         _updateOracleCache();
-        uint256 avgGasPrice = cachedGasPrice;
-        uint256 ethPriceUSD = cachedEthPriceUSD;
-        uint256 token0PriceUSD = cachedToken0PriceUSD;
-        uint256 token1PriceUSD = cachedToken1PriceUSD;
+        uint128 avgGasPrice = cachedGasPrice;
+        uint128 ethPriceUSD = cachedEthPriceUSD;
+        uint128 token0PriceUSD = cachedToken0PriceUSD;
+        uint128 token1PriceUSD = cachedToken1PriceUSD;
 
         // calculate gas cost in USD
         uint256 gasCostUSD = ((gasUsed * avgGasPrice) * ethPriceUSD) / ONE_SQUARED;
@@ -353,14 +353,14 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
 
         // update trader stats
         TraderStats storage stats = traderStats[trader];
-        stats.totalTrades++;
+        stats.totalTrades = uint128(stats.totalTrades + 1);
         if (profitPercentage > 0) {
-            stats.profitableTrades++;
+            stats.profitableTrades = uint128(stats.profitableTrades + 1);
             if (profitPercentage > stats.bestTradePercentage) {
-                stats.bestTradePercentage = profitPercentage;
+                stats.bestTradePercentage = int128(profitPercentage);
             }
         }
-        stats.lastTradeTimestamp = block.timestamp;
+        stats.lastTradeTimestamp = uint64(block.timestamp);
         emit TraderStatsUpdated(
             trader,
             stats.totalTrades,
@@ -372,7 +372,7 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
 
         // if contest is active, update the leaderboard for qualifying trades
         if (contestActive && profitPercentage > int256(MINIMUM_PROFIT_BPS)) {
-            _updateLeaderboard(trader, profitPercentage, valueInUSD, block.timestamp);
+            _updateLeaderboard(trader, profitPercentage, valueInUSD, uint64(block.timestamp));
         }
 
         // clear snapshot
@@ -393,7 +393,7 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
 
         currentContestId++;
         contestActive = true;
-        contestEndTime = block.timestamp + CONTEST_DURATION;
+        contestEndTime = uint64(block.timestamp + CONTEST_DURATION);
 
         delete currentLeaderboard;
         // force an immediate oracle update
@@ -453,36 +453,37 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
     // TODO: NATSPEC
     // updates the oracle cache if the cache interval has passed
     function _updateOracleCache() internal {
-        if (block.timestamp - lastOracleCacheUpdate >= ORACLE_CACHE_INTERVAL) {
+        uint256 currentTime = block.timestamp;
+        if (currentTime - lastOracleCacheUpdate >= ORACLE_CACHE_INTERVAL) {
             // update gas price
-            (, int256 gasAnswer, ,uint256 gasTimestamp,) = gasPriceOracle.latestRoundData();
+            (, int256 gasAnswer, , uint256 gasTimestamp,) = gasPriceOracle.latestRoundData();
             if (gasAnswer <= 0) revert InvalidGasPrice();
             if (block.timestamp - gasTimestamp > MAX_ORACLE_AGE) revert GasPriceStale();
 
-            cachedGasPrice = _scalePrice(uint256(gasAnswer), gasPriceOracleDecimals, 18);
+            cachedGasPrice = uint128(_scalePrice(uint256(gasAnswer), gasPriceOracleDecimals, 18));
 
             // update ETH price
-            (, int256 ethAnswer, ,uint256 ethTimestamp, ) = ethUsdOracle.latestRoundData();
+            (, int256 ethAnswer, , uint256 ethTimestamp, ) = ethUsdOracle.latestRoundData();
             if (ethAnswer <= 0) revert InvalidEthPrice();
-            if (block.timestamp - ethTimestamp > MAX_ORACLE_AGE) revert EthPriceStale();
+            if (currentTime - ethTimestamp > MAX_ORACLE_AGE) revert EthPriceStale();
 
-            cachedEthPriceUSD = _scalePrice(uint256(ethAnswer), ethUsdOracleDecimals, 18);
+            cachedEthPriceUSD = uint128(_scalePrice(uint256(ethAnswer), ethUsdOracleDecimals, 18));
 
             // update token0 price
-            (, int256 token0Answer, ,uint256 token0Timestamp, ) = token0PriceOracle.latestRoundData();
+            (, int256 token0Answer, , uint256 token0Timestamp, ) = token0PriceOracle.latestRoundData();
             if (token0Answer <= 0) revert InvalidToken0Price();
-            if (block.timestamp - token0Timestamp > MAX_ORACLE_AGE) revert Token0PriceStale();
+            if (currentTime - token0Timestamp > MAX_ORACLE_AGE) revert Token0PriceStale();
 
-            cachedToken0PriceUSD = _scalePrice(uint256(token0Answer), token0PriceOracleDecimals, 18);
+            cachedToken0PriceUSD = uint128(_scalePrice(uint256(token0Answer), token0PriceOracleDecimals, 18));
 
             // update token1 price
-            (, int256 token1Answer, ,uint256 token1Timestamp, ) = token1PriceOracle.latestRoundData();
+            (, int256 token1Answer, , uint256 token1Timestamp, ) = token1PriceOracle.latestRoundData();
             if (token1Answer <= 0) revert InvalidToken1Price();
-            if (block.timestamp - token1Timestamp > MAX_ORACLE_AGE) revert Token1PriceStale();
+            if (currentTime - token1Timestamp > MAX_ORACLE_AGE) revert Token1PriceStale();
 
-            cachedToken1PriceUSD = _scalePrice(uint256(token1Answer), token1PriceOracleDecimals, 18);
+            cachedToken1PriceUSD = uint128(_scalePrice(uint256(token1Answer), token1PriceOracleDecimals, 18));
 
-            lastOracleCacheUpdate = block.timestamp;
+            lastOracleCacheUpdate = uint64(currentTime);
             emit OracleCacheUpdated(lastOracleCacheUpdate);
         }
     }
@@ -495,7 +496,7 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
         address trader,
         int256 profitPercentage,
         uint256 tradeVolumeUSD,
-        uint256 timestamp
+        uint64 timestamp
     ) internal {
         Leaderboard storage lb = currentLeaderboard;
 
@@ -512,9 +513,9 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
         if (found) {
             // only update if the new trade is better than the current record
             if (_isBetter(profitPercentage, timestamp, tradeVolumeUSD, lb.entries[indexFound])) {
-                lb.entries[indexFound] = LeaderboardEntry(trader, profitPercentage, tradeVolumeUSD, timestamp);
+                lb.entries[indexFound] = LeaderboardEntry(trader, profitPercentage, uint128(tradeVolumeUSD), timestamp);
 
-                emit LeaderboardUpdated(trader, profitPercentage, tradeVolumeUSD, timestamp);
+                emit LeaderboardUpdated(trader, profitPercentage, uint128(tradeVolumeUSD), timestamp);
             } else {
                 return;
             }
@@ -523,10 +524,10 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
             bool inserted = false;
             for (uint8 i = 0; i < 3; i++) {
                 if (lb.entries[i].trader == address(0)) {
-                    lb.entries[i] = LeaderboardEntry(trader, profitPercentage, tradeVolumeUSD, timestamp);
+                    lb.entries[i] = LeaderboardEntry(trader, profitPercentage, uint128(tradeVolumeUSD), timestamp);
                     inserted = true;
 
-                    emit LeaderboardUpdated(trader, profitPercentage, tradeVolumeUSD, timestamp);
+                    emit LeaderboardUpdated(trader, profitPercentage, uint128(tradeVolumeUSD), timestamp);
                     break;
                 }
             }
@@ -545,9 +546,9 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
                 }
                 // replace the worst entry if the new trade is better
                 if (_isBetter(profitPercentage, timestamp, tradeVolumeUSD, lb.entries[worstIndex])) {
-                    lb.entries[worstIndex] = LeaderboardEntry(trader, profitPercentage, tradeVolumeUSD, timestamp);
+                    lb.entries[worstIndex] = LeaderboardEntry(trader, profitPercentage, uint128(tradeVolumeUSD), timestamp);
 
-                    emit LeaderboardUpdated(trader, profitPercentage, tradeVolumeUSD, timestamp);
+                    emit LeaderboardUpdated(trader, profitPercentage, uint128(tradeVolumeUSD), timestamp);
                 } else {
                     return;
                 }
