@@ -26,30 +26,30 @@ import {Hooks} from "v4-core/libraries/Hooks.sol";
  *         points) is eligible to be recorded on the contest leaderboard.
  *
  *         The leaderboard is maintained as a fixed-size array of 3 winners, ensuring that on-chain
- *         computations remain gas efficient. Each time an eligible trade is executed, the contract checks
- *         if the trader already has an entry. If so, it updates the trader's record only if the new trade
- *         is better. If not, the trade is inserted into the leaderboard if there is an open slot or if it
- *         outperforms the current worst entry.
+ *         computations remain gas efficient. Each time an eligible trade is executed, the contract
+ *         checks if the trader already has an entry. If so, it updates the trader's record only if
+ *         the new trade is better. If not, the trade is inserted into the leaderboard if there is
+ *         an open slot or if it outperforms the current worst entry.
  *         Ties are resolved by comparing profit percentages first, then by the earlier trade timestamp,
  *         and finally by higher trade volume in USD.
  *
- *         The contract uses oracles to fetch current price data for gas, ETH, token0, and token1. Oracle data
- *         is updated at defined intervals and validated for freshness to ensure accurate and current pricing;
- *         once verified, the values are cached to minimize repetitive on-chain computations. Calculating values
- *         in USD ensures fair comparisons across different token pairs and enables consistent contest performance
- *         metrics.
+ *         The contract uses oracles to fetch current price data for gas, ETH, token0, and token1. Oracle
+ *         data is updated at defined intervals and validated for freshness to ensure accurate and current
+ *         pricing; once verified, the values are cached to minimize repetitive on-chain computations.
+ *         Calculating values in USD ensures fair comparisons across different token pairs and enables
+ *         consistent contest performance metrics.
  *
- *         This design paves the way for future enhancements, including reward distribution mechanisms where winners
- *         can earn token rewards to encourage trading in the pair pool and competition.
+ *         This design paves the way for future enhancements, including reward distribution mechanisms
+ *         where winners can earn token rewards to encourage trading in the pair pool and competition.
  *         Moreover, the leaderboard system and potential reward system, lends itself to various applications
- *         such as airdrops, memecoin launches, and even copy-trading platforms, where users can opt in to have
- *         high-performing trades automatically executed on their behalf for a fee.
+ *         such as airdrops, memecoin launches, and even copy-trading platforms, where users can opt in to
+ *         have high-performing trades automatically executed on their behalf for a fee.
  *
  * @dev    The contract currently assumes all tokens adhere to an 18-decimal standard for simplicity in value
  *         conversion. Future iterations will accommodate tokens with different decimal precisions.
  *
- *         The contract caches oracle data (gas price, ETH price, token0 price, and token1 price) to reduce gas
- *         costs, with updates occurring at an hourly interval to balance efficiency and data freshness.
+ *         The contract caches oracle data (gas price, ETH price, token0 price, and token1 price) to reduce
+ *         gas costs, with updates occurring at an hourly interval to balance efficiency and data freshness.
  *
  */
 contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
