@@ -41,9 +41,10 @@ import {Hooks} from "v4-core/libraries/Hooks.sol";
  *
  *         This design paves the way for future enhancements, including reward distribution mechanisms
  *         where winners can earn token rewards to encourage trading in the pair pool and competition.
- *         Moreover, the leaderboard system and potential reward system, lends itself to various applications
- *         such as airdrops, memecoin launches, and even copy-trading platforms, where users can opt in to
- *         have high-performing trades automatically executed on their behalf for a fee.
+ *         Moreover, the leaderboard system and potential reward system, lends itself to various
+ *         applications such as airdrops, memecoin launches, and even copy-trading platforms, where
+ *         users can opt in to have high-performing trades automatically executed on their behalf for
+ *         a fee.
  *
  * @dev    The contract currently assumes all tokens adhere to an 18-decimal standard for simplicity in value
  *         conversion. Future iterations will accommodate tokens with different decimal precisions.
