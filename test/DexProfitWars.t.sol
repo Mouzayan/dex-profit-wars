@@ -126,6 +126,8 @@ contract DexProfitWarsTest is Test, Deployers {
         );
         hook = DexProfitWars(hookAddress);
 
+        hook.transferOwnership(address(this));
+
         // initialize the pool
         (key,) = initPool(
             token0,
@@ -152,8 +154,10 @@ contract DexProfitWarsTest is Test, Deployers {
     }
 
     function test_swapAtLoss() public {
-        vm.startPrank(USER);
+        vm.warp(block.timestamp + 120);
+        hook.startContest();
 
+        vm.startPrank(USER);
         MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), type(uint256).max);
         MockERC20(Currency.unwrap(token0)).approve(address(swapRouter), type(uint256).max);
 
@@ -206,8 +210,10 @@ contract DexProfitWarsTest is Test, Deployers {
     }
 
     function test_swapAtProfit() public {
-        vm.startPrank(USER);
+        vm.warp(block.timestamp + 120);
+        hook.startContest();
 
+        vm.startPrank(USER);
         MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), type(uint256).max);
         MockERC20(Currency.unwrap(token0)).approve(address(swapRouter), type(uint256).max);
 
@@ -264,8 +270,10 @@ contract DexProfitWarsTest is Test, Deployers {
     }
     // forge test --match-path test/DexProfitWars.t.sol --match-test test_twoProfitableSwaps -vvv
     function test_twoProfitableSwaps() public {
-        vm.startPrank(USER);
+        vm.warp(block.timestamp + 120);
+        hook.startContest();
 
+        vm.startPrank(USER);
         // approve tokens for swapping
         MockERC20(Currency.unwrap(token1)).approve(address(swapRouter), type(uint256).max);
         MockERC20(Currency.unwrap(token0)).approve(address(swapRouter), type(uint256).max);
