@@ -30,14 +30,14 @@ import {Hooks} from "v4-core/libraries/Hooks.sol";
  *         checks if the trader already has an entry. If so, it updates the trader's record only if
  *         the new trade is better. If not, the trade is inserted into the leaderboard if there is
  *         an open slot or if it outperforms the current worst entry.
- *         Ties are resolved by comparing profit percentages first, then by the earlier trade timestamp,
- *         and finally by higher trade volume in USD.
+ *         Ties are resolved by comparing profit percentages first, then by the earlier trade
+ *         timestamp, and finally by higher trade volume in USD.
  *
- *         The contract uses oracles to fetch current price data for gas, ETH, token0, and token1. Oracle
- *         data is updated at defined intervals and validated for freshness to ensure accurate and current
- *         pricing; once verified, the values are cached to minimize repetitive on-chain computations.
- *         Calculating values in USD ensures fair comparisons across different token pairs and enables
- *         consistent contest performance metrics.
+ *         The contract uses oracles to fetch current price data for gas, ETH, token0, and token1.
+ *         Oracle data is updated at defined intervals and validated for freshness to ensure accurate
+ *         and current pricing; once verified, the values are cached to minimize repetitive on-chain
+ *         computations. Calculating values in USD ensures fair comparisons across different token
+ *         pairs and enables consistent contest performance metrics.
  *
  *         This design paves the way for future enhancements, including reward distribution mechanisms
  *         where winners can earn token rewards to encourage trading in the pair pool and competition.

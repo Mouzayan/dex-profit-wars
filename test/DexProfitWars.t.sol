@@ -15,7 +15,7 @@ import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 import {Currency, CurrencyLibrary} from "v4-core/types/Currency.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
-import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
+import {BalanceDelta, toBalanceDelta} from "v4-core/types/BalanceDelta.sol";
 
 import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {TickMath} from "v4-core/libraries/TickMath.sol";
@@ -24,6 +24,7 @@ import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
 import {LiquidityAmounts} from "@uniswap/v4-core/test/utils/LiquidityAmounts.sol";
 
 import {MockV3Aggregator} from "./mocks/MockV3Aggregator.sol";
+import {DexProfitWarsHarness} from "./mocks/DexProfitWarsHarness.sol";
 import {DexProfitWars} from "../src/DexProfitWars.sol";
 
 // TODO: REMOVE CONSOLE.LOGS !!!!
@@ -34,6 +35,7 @@ contract DexProfitWarsTest is Test, Deployers {
     using CurrencyLibrary for Currency;
 
     DexProfitWars public hook;
+    DexProfitWarsHarness public harness;
     PoolSwapTest public poolSwapTest;
 
     // token currencies in the pool
@@ -47,6 +49,11 @@ contract DexProfitWarsTest is Test, Deployers {
     MockV3Aggregator public gasPriceOracle;
 
     address USER = makeAddr("USER");
+    // four trader addresses for testing
+    address TRADER1 = makeAddr("TRADER1");
+    address TRADER2 = makeAddr("TRADER2");
+    address TRADER3 = makeAddr("TRADER3");
+    address TRADER4 = makeAddr("TRADER4");
 
     int256 constant SEND_VALUE_LARGE = 100e18;
     int256 constant SEND_VALUE_SMALL = 1e16;
@@ -104,8 +111,18 @@ contract DexProfitWarsTest is Test, Deployers {
             hookAddress
         );
         hook = DexProfitWars(hookAddress);
-
         hook.transferOwnership(address(this));
+
+        // deploy DexProfitWarsHarness
+        address harnessAddress = address(flags);
+
+        deployCodeTo(
+            "DexProfitWarsHarness.sol",
+            constructorArgs,
+            harnessAddress
+        );
+        harness = DexProfitWarsHarness(harnessAddress);
+        harness.transferOwnership(address(this));
 
         // initialize the pool
         (key,) = initPool(
@@ -131,6 +148,54 @@ contract DexProfitWarsTest is Test, Deployers {
         // set the gas price (in wei) for test txns
         vm.txGasPrice(GAS_PRICE);
     }
+
+    // /**
+    //  * Utility function testSimulateTrade
+    //  * This helper function (which you add to your contract for testing) simulates
+    //  * a swap by letting you specify the amount of tokens spent and tokens received.
+    //  * With our fixed mock oracle prices (token0 = $1 and token1 = $2), the profit
+    //  * percentage is computed as:
+    //  * The profit percentage is computed approximately as:
+    //  * profitBps = (((2 * tokensGained) - tokensSpent) * 1e4) / tokenSpent;
+    //  * Therefore:
+    //  * tokensGained = tokensSpent * ((10000 + P) / (2 * 10000));
+    //  * We choose tokensGained based on a desired profit (e.g. 300, 400, 500, etc.).
+    //  */
+    // function testSimulateTrade(
+    // address trader,
+    // uint256 tokensSpent,
+    // uint256 tokensGained,
+    // bool zeroForOne
+    // ) public {
+    //     // NOTE:
+    //     // for testing, we are assuming gasUsed = zero
+
+    //     // convert uint256 to int256, then to int128
+    //     int256 castSpent = int256(tokensSpent);
+    //     int256 castGained = int256(tokensGained);
+    //     int128 sSpent = int128(castSpent);
+    //     int128 sGained = int128(castGained);
+
+    //     int128 a0;
+    //     int128 a1;
+    //     if (zeroForOne) {
+    //         a0 = -sSpent;
+    //         a1 = sGained;
+    //     } else {
+    //         a0 = sGained;
+    //         a1 = -sSpent;
+    //     }
+
+    //     BalanceDelta delta = toBalanceDelta(a0, a1);
+
+    //     IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
+    //         zeroForOne: zeroForOne,
+    //         amountSpecified: zeroForOne ? -int256(tokensSpent) : int256(tokensSpent),
+    //         sqrtPriceLimitX96: 0  // dummy value not used for profit calculations
+    //     });
+
+    //     hook._afterSwap(trader, key, params, delta, abi.encode(trader));
+    // }
 
     function test_swapAtLoss() public {
         vm.warp(block.timestamp + 120);
@@ -247,7 +312,7 @@ contract DexProfitWarsTest is Test, Deployers {
 
         vm.stopPrank();
     }
-    // forge test --match-path test/DexProfitWars.t.sol --match-test test_twoProfitableSwaps -vvv
+
     function test_twoProfitableSwaps() public {
         vm.warp(block.timestamp + 120);
         hook.startContest();
@@ -309,5 +374,136 @@ contract DexProfitWarsTest is Test, Deployers {
         // best trade percentage is updated to the highest one
         assertGe(bestTradePercentage, bestTradePercentage1);
         vm.stopPrank();
+    }
+
+    // forge test --match-path test/DexProfitWars.t.sol --match-test test_leaderboardThreeTradersProfit -vvv
+    // ==================================================================
+    // 1) Three traders with profitable trades get onto the leaderboard,
+    //    in the right order based on profit percentages.
+    // ==================================================================
+    function test_leaderboardThreeTradersProfit() public {
+        // Use a fixed tokensSpent for simplicity.
+        uint256 tokensSpent = 100e6; // e.g. 100,000,000 units
+        // Compute tokensGained such that:
+        // profitBps = ((2*tokensGained - tokensSpent) * 1e4) / tokensSpent.
+        // Rearranging: tokensGained = tokensSpent * (10000 + desiredBps) / (2 * 10000)
+        uint256 tokensGained_T1 = (tokensSpent * (10000 + 300)) / (2 * 10000); // 300 bps for TRADER1
+        uint256 tokensGained_T2 = (tokensSpent * (10000 + 500)) / (2 * 10000); // 500 bps for TRADER2
+        uint256 tokensGained_T3 = (tokensSpent * (10000 + 250)) / (2 * 10000); // 250 bps for TRADER3
+
+        // Simulate trades for three different traders (assume zeroForOne is true)
+        testSimulateTrade(TRADER1, tokensSpent, tokensGained_T1, true);
+        testSimulateTrade(TRADER2, tokensSpent, tokensGained_T2, true);
+        testSimulateTrade(TRADER3, tokensSpent, tokensGained_T3, true);
+
+        // Retrieve current leaderboard
+        DexProfitWars.LeaderboardEntry[3] memory board = hook.getCurrentLeaderboard();
+
+        // Expected ordering:
+        // Highest profit (500 bps) -> TRADER2, then 300 bps -> TRADER1, then 250 bps -> TRADER3.
+        assertEq(board[0].trader, TRADER2, "TRADER2 should rank first (500 bps)");
+        assertEq(board[1].trader, TRADER1, "TRADER1 should rank second (300 bps)");
+        assertEq(board[2].trader, TRADER3, "TRADER3 should rank third (250 bps)");
+    }
+
+    // forge test --match-path test/DexProfitWars.t.sol --match-test test_existingTraderUpdatesProfit -vvv
+    // ==================================================================
+    // 2) Three traders are on the leaderboard and one (TRADER2) gets a new
+    //    higher profit percentage during the contest window; his entry is updated.
+    // ==================================================================
+    function test_existingTraderUpdatesProfit() public {
+        uint256 tokensSpent = 100e6;
+        // Initial trades:
+        uint256 tokensGained_T1 = (tokensSpent * (10000 + 300)) / (2 * 10000); // 300 bps
+        uint256 tokensGained_T2 = (tokensSpent * (10000 + 400)) / (2 * 10000); // 400 bps
+        uint256 tokensGained_T3 = (tokensSpent * (10000 + 200)) / (2 * 10000); // 200 bps
+
+        testSimulateTrade(TRADER1, tokensSpent, tokensGained_T1, true);
+        testSimulateTrade(TRADER2, tokensSpent, tokensGained_T2, true);
+        testSimulateTrade(TRADER3, tokensSpent, tokensGained_T3, true);
+
+        // Now, simulate a new trade for TRADER2 with a higher profit: 600 bps.
+        uint256 tokensGained_T2_new = (tokensSpent * (10000 + 600)) / (2 * 10000);
+        testSimulateTrade(TRADER2, tokensSpent, tokensGained_T2_new, true);
+
+        // Retrieve the updated leaderboard.
+        DexProfitWars.LeaderboardEntry[3] memory board = hook.getCurrentLeaderboard();
+
+        // Expect TRADER2 to now have the highest profit (600 bps)
+        assertEq(board[0].trader, TRADER2, "TRADER2 should be updated to rank first (600 bps)");
+        // TRADER1 and TRADER3 remain in the board with their initial profits.
+        assertEq(board[1].trader, TRADER1, "TRADER1 should remain second (300 bps)");
+        assertEq(board[2].trader, TRADER3, "TRADER3 should remain third (200 bps)");
+    }
+
+    // forge test --match-path test/DexProfitWars.t.sol --match-test test_tieBrokenByTimestamp -vvv
+    // ==================================================================
+    // 3) Two traders get the exact same profit percentage,
+    //    and the tie is broken based on who traded earlier.
+    // ==================================================================
+    function test_tieBrokenByTimestamp() public {
+        uint256 tokensSpent = 100e6;
+        uint256 tokensGained = (tokensSpent * (10000 + 300)) / (2 * 10000); // 300 bps profit
+
+        // Simulate TRADER1 trading first.
+        vm.warp(block.timestamp + 10); // set time to t + 10
+        testSimulateTrade(TRADER1, tokensSpent, tokensGained, true);
+
+        // Simulate TRADER2 trading later.
+        vm.warp(block.timestamp + 20); // now time increased further
+        testSimulateTrade(TRADER2, tokensSpent, tokensGained, true);
+
+        // Retrieve leaderboard; both trades have 300 bps profit.
+        // Tie-breaker should put the earlier trade (TRADER1) ahead.
+        DexProfitWars.LeaderboardEntry[3] memory board = hook.getCurrentLeaderboard();
+        assertEq(board[0].trader, TRADER1, "TRADER1 should rank above TRADER2 (earlier timestamp)");
+        assertEq(board[1].trader, TRADER2, "TRADER2 should rank second");
+    }
+
+    // forge test --match-path test/DexProfitWars.t.sol --match-test test_tieBrokenByTradeVolume -vvv
+    // ==================================================================
+    // 4) Two traders get the exact same profit percentage and same timestamp;
+    //    the tie is broken based on bigger trade volume.
+    // ==================================================================
+    function test_tieBrokenByTradeVolume() public {
+        // Use different trade volumes but same profit percentage.
+        uint256 tokensSpent_T1 = 100e6;
+        uint256 tokensSpent_T2 = 150e6; // larger volume for TRADER2
+        uint256 tokensGained_T1 = (tokensSpent_T1 * (10000 + 300)) / (2 * 10000);
+        uint256 tokensGained_T2 = (tokensSpent_T2 * (10000 + 300)) / (2 * 10000);
+
+        // Ensure both trades occur at the same timestamp.
+        uint256 t = block.timestamp + 10;
+        vm.warp(t);
+        testSimulateTrade(TRADER1, tokensSpent_T1, tokensGained_T1, true);
+        testSimulateTrade(TRADER2, tokensSpent_T2, tokensGained_T2, true);
+
+        // Now, with equal profit percentage and timestamp, TRADER2 should win due to bigger volume.
+        DexProfitWars.LeaderboardEntry[3] memory board = hook.getCurrentLeaderboard();
+        assertEq(board[0].trader, TRADER2, "TRADER2 should rank first (bigger volume)");
+        assertEq(board[1].trader, TRADER1, "TRADER1 should rank second");
+    }
+
+    // forge test --match-path test/DexProfitWars.t.sol --match-test test_getCurrentLeaderboard -vvv
+    // ==================================================================
+    // 5) Test that getCurrentLeaderboard shows the correct entries.
+    // ==================================================================
+    function test_getCurrentLeaderboard() public {
+        // Simulate two trades.
+        uint256 tokensSpent = 100e6;
+        uint256 tokensGained_T1 = (tokensSpent * (10000 + 300)) / (2 * 10000);
+        uint256 tokensGained_T2 = (tokensSpent * (10000 + 400)) / (2 * 10000);
+
+        testSimulateTrade(TRADER1, tokensSpent, tokensGained_T1, true);
+        testSimulateTrade(TRADER2, tokensSpent, tokensGained_T2, true);
+
+        // Retrieve current leaderboard.
+        DexProfitWars.LeaderboardEntry[3] memory board = hook.getCurrentLeaderboard();
+
+        // Expect the top two entries to be filled (TRADER2 with higher profit, then TRADER1)
+        // and the third slot to be empty.
+        assertEq(board[0].trader, TRADER2, "TRADER2 should be #1");
+        assertEq(board[1].trader, TRADER1, "TRADER1 should be #2");
+        assertEq(board[2].trader, address(0), "Slot #3 should be empty");
     }
 }
