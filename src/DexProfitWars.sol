@@ -46,8 +46,8 @@ import {Hooks} from "v4-core/libraries/Hooks.sol";
  *         users can opt in to have high-performing trades automatically executed on their behalf for
  *         a fee.
  *
- * @dev    The contract currently assumes all tokens adhere to an 18-decimal standard for simplicity in value
- *         conversion. Future iterations will accommodate tokens with different decimal precisions.
+ * @dev    The contract currently assumes all tokens adhere to an 18-decimal standard for simplicity in
+ *         value conversion. Future iterations will accommodate tokens with different decimal precisions.
  *
  *         The contract caches oracle data (gas price, ETH price, token0 price, and token1 price) to reduce
  *         gas costs, with updates occurring at an hourly interval to balance efficiency and data freshness.
