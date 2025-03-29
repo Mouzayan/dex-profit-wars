@@ -78,23 +78,21 @@ import {Hooks} from "v4-core/libraries/Hooks.sol";
  *                 - Distribution delays
  *
  *         This mechanism could play into memecoin launches / airdrops etc..
- *
- *         TODO:
- *         - Remove EXCESS COMMENTS
- *         - Deal w/ partial exits
- *         - Partial exits
- *         - Track positions as swaps occur
- *         - Write interface
- *         - How to be gas effificent since swap PnL is calcualted at every swap
- *         - Do we need more so[histicated price validation?
- *         - Do we need circuit breakers?
- *         - Add bonus locking period - IMPORTANT
- *         - Add Copy Trading feature
- *         - Add events, add custom errors
- *         - Reentrancy, CEI ??
  */
 contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
     using BalanceDeltaLibrary for BalanceDelta;
+
+    // ======================= Custom Errors ======================
+    error InvalidGasPrice();
+    error GasPriceStale();
+    error InvalidEthPrice();
+    error EthPriceStale();
+    error InvalidToken0Price();
+    error Token0PriceStale();
+    error InvalidToken1Price();
+    error Token1PriceStale();
+    error ContestAlreadyActive();
+    error NoActiveContest();
 
     // ========================= Events =========================
     event ContestStarted(uint256 indexed contestId, uint256 contestEndTime);
@@ -124,7 +122,7 @@ contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
     struct LeaderboardEntry {
         address trader;
         int256 profitPercentage; // profit in basis points
-        uint256 tradeVolumeUSD;  // trade dollar volume
+        uint256 tradeVolumeUSD;  // trade volume in USD assuming 18 decimals
         uint256 timestamp;
     }
 
@@ -134,19 +132,15 @@ contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
     }
 
     // =================== State Variables ==================
-    // Archive past contest leaderboards, keyed by contestId
     mapping(uint256 => Leaderboard) private pastContestLeaderboards;
-
-    // gas snapshot for each trader
     mapping(address => uint256) public snapshotGas;
-    // trader stats
     mapping(address => TraderStats) public traderStats;
 
     bool public contestActive;
     uint256 public contestEndTime;
     uint256 public currentContestId;
 
-    IPoolManager public manager;
+    IPoolManager public immutable manager;
     // the current contest leaderboard
     Leaderboard private currentLeaderboard;
 
@@ -166,10 +160,10 @@ contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
     uint256 public constant MAX_ORACLE_AGE = 1 hours;
 
     // price oracle interfaces
-    AggregatorV3Interface public gasPriceOracle;
-    AggregatorV3Interface public token0PriceOracle; // token0 price in USD
-    AggregatorV3Interface public token1PriceOracle; // token1 price in USD
-    AggregatorV3Interface public ethUsdOracle;
+    AggregatorV3Interface public immutable gasPriceOracle;
+    AggregatorV3Interface public immutable token0PriceOracle; // token0 price in USD
+    AggregatorV3Interface public immutable token1PriceOracle; // token1 price in USD
+    AggregatorV3Interface public immutable ethUsdOracle;
 
     // ====================== Immutables ====================
     // oracle decimals
@@ -299,7 +293,6 @@ contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
         BalanceDelta delta,
         bytes calldata hookData
     ) internal override onlyPoolManager nonReentrant returns (bytes4, int128) {
-        // if contest is active but the contest period has ended, archive the contest
         if (contestActive && block.timestamp >= contestEndTime) {
             _archiveCurrentContest();
         }
@@ -396,7 +389,7 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
      * @dev Only the owner can start a contest.
      */
     function startContest() external onlyOwner nonReentrant {
-        require(!contestActive, "Contest already active");
+        if (contestActive) revert ContestAlreadyActive();
 
         currentContestId++;
         contestActive = true;
@@ -417,7 +410,7 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
      * @dev Only the owner can end a contest.
      */
     function endContest() external onlyOwner nonReentrant {
-        require(contestActive, "No active contest");
+        if (!contestActive) revert NoActiveContest();
 
         _archiveCurrentContest();
         emit ContestEnded(currentContestId);
@@ -463,29 +456,29 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
         if (block.timestamp - lastOracleCacheUpdate >= ORACLE_CACHE_INTERVAL) {
             // update gas price
             (, int256 gasAnswer, ,uint256 gasTimestamp,) = gasPriceOracle.latestRoundData();
-            require(gasAnswer > 0, "Invalid gas price");
-            require(block.timestamp - gasTimestamp <= MAX_ORACLE_AGE, "Gas price stale");
+            if (gasAnswer <= 0) revert InvalidGasPrice();
+            if (block.timestamp - gasTimestamp > MAX_ORACLE_AGE) revert GasPriceStale();
 
             cachedGasPrice = _scalePrice(uint256(gasAnswer), gasPriceOracleDecimals, 18);
 
             // update ETH price
             (, int256 ethAnswer, ,uint256 ethTimestamp, ) = ethUsdOracle.latestRoundData();
-            require(ethAnswer > 0, "Invalid eth price");
-            require(block.timestamp - ethTimestamp <= MAX_ORACLE_AGE, "ETH price stale");
+            if (ethAnswer <= 0) revert InvalidEthPrice();
+            if (block.timestamp - ethTimestamp > MAX_ORACLE_AGE) revert EthPriceStale();
 
             cachedEthPriceUSD = _scalePrice(uint256(ethAnswer), ethUsdOracleDecimals, 18);
 
             // update token0 price
             (, int256 token0Answer, ,uint256 token0Timestamp, ) = token0PriceOracle.latestRoundData();
-            require(token0Answer > 0, "Invalid token0 price");
-            require(block.timestamp - token0Timestamp <= MAX_ORACLE_AGE, "Token0 price stale");
+            if (token0Answer <= 0) revert InvalidToken0Price();
+            if (block.timestamp - token0Timestamp > MAX_ORACLE_AGE) revert Token0PriceStale();
 
             cachedToken0PriceUSD = _scalePrice(uint256(token0Answer), token0PriceOracleDecimals, 18);
 
             // update token1 price
             (, int256 token1Answer, ,uint256 token1Timestamp, ) = token1PriceOracle.latestRoundData();
-            require(token1Answer > 0, "Invalid token1 price");
-            require(block.timestamp - token1Timestamp <= MAX_ORACLE_AGE, "Token1 price stale");
+            if (token1Answer <= 0) revert InvalidToken1Price();
+            if (block.timestamp - token1Timestamp > MAX_ORACLE_AGE) revert Token1PriceStale();
 
             cachedToken1PriceUSD = _scalePrice(uint256(token1Answer), token1PriceOracleDecimals, 18);
 
