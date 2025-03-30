@@ -2,7 +2,7 @@
 
 pragma solidity 0.8.26;
 
-import {Test, console} from "forge-std/Test.sol";
+import {Test, console, Vm} from "forge-std/Test.sol";
 
 import {Deployers} from "@uniswap/v4-core/test/utils/Deployers.sol";
 import {PoolSwapTest} from "v4-core/test/PoolSwapTest.sol";
@@ -415,67 +415,79 @@ contract DexProfitWarsTest is Test, Deployers {
         assertEq(board[2].trader, lowest);
     }
 
-    // forge test --match-path test/DexProfitWars.t.sol --match-test test_existingTraderUpdatesProfit -vvv
-    // Three traders are on the leaderboard and one (TRADER2) gets a new
-    // higher profit percentage during the contest window; his entry is updated
-    // function test_existingTraderUpdatesProfit() public {
-    //     vm.warp(1000);
+    // Three traders are on the leaderboard and one trades twice, only higher
+    // profit percentage is reflected on the leaderboard
+    function test_updatesLBProfitIfBetter() public {
+        vm.warp(1000);
 
-    //     ethUsdOracle.updateAnswer(2000e8);
-    //     token0Oracle.updateAnswer(1e8);
-    //     token1Oracle.updateAnswer(2e8);
-    //     gasPriceOracle.updateAnswer(15e8);
+        ethUsdOracle.updateAnswer(2000e8);
+        token0Oracle.updateAnswer(1e8);
+        token1Oracle.updateAnswer(2e8);
+        gasPriceOracle.updateAnswer(15e8);
 
-    //     hook.startContest();
+        hook.startContest();
 
-    //     // perform swaps
-    //     testSwap(TRADER2, 80e18, 10);
-    //     testSwap(TRADER1, 30e18, 10);
-    //     testSwap(TRADER3, 50e18, 10);
+        // record logs from TRADER2's initial swap
+        vm.recordLogs();
+        testSwap(TRADER2, 8e18, 10);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
 
-    //     // retrieve the initial leaderboard
-    //     DexProfitWars.LeaderboardEntry[3] memory boardInitial = hook.getCurrentLeaderboard();
+        // expose the profit percentage
+        bytes32 eventSig = keccak256("TraderProfited(address,int128,uint64)");
+        int256 profitFromEvent;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics.length > 0 && logs[i].topics[0] == eventSig) {
+                address eventTrader = address(uint160(uint256(logs[i].topics[1])));
+                // decode the remaining params
+                (int128 tradePercentage, uint64 tradeTimestamp)
+                    = abi.decode(logs[i].data, (int128, uint64));
 
-    //     // find Trader2's profit in the initial leaderboard
-    //     int256 initialTrader2Profit;
-    //     for (uint8 i = 0; i < boardInitial.length; i++) {
-    //         if (boardInitial[i].trader == TRADER2) {
-    //             initialTrader2Profit = boardInitial[i].profitPercentage;
-    //         }
-    //     }
+                if (eventTrader == TRADER2) {
+                    profitFromEvent = tradePercentage;
+                    break;
+                }
+            }
+        }
 
-    //     console.log("TEST Trader2 Adress: ----------------------", TRADER2);
-    //     console.log("TEST Initial Trader2 profit: ----------------------", uint256(initialTrader2Profit));
+        testSwap(TRADER1, 30e18, 10);
 
-    //     vm.warp(block.timestamp + 220);
-    //     ethUsdOracle.updateAnswer(2000e8);
-    //     token0Oracle.updateAnswer(1e8);
-    //     token1Oracle.updateAnswer(2e8);
-    //     gasPriceOracle.updateAnswer(15e8);
+        vm.warp(block.timestamp + 120);
+        testSwap(TRADER3, 80e18, 10);
 
-    //     // trader2 now performs another swap
-    //     // minimal slippage, better price, higher profit ratio
-    //     testSwap(TRADER2, 10e18, 2);
+        // record logs from TRADER2's second swap
+        vm.recordLogs();
+        testSwap(TRADER2, 5e18, 15);
+        Vm.Log[] memory logs2 = vm.getRecordedLogs();
 
-    //     // retrieve updated Trader2 profit
-    //     (, , int256 newProfit2, ,) = hook.getTraderStats(TRADER2);
-    //     //assertGt(newProfit2, initialTrader2Profit);
+        // expose the profit percentage
+        bytes32 eventSig2 = keccak256("TraderProfited(address,int128,uint64)");
+        int256 profitFromEvent2;
+        for (uint256 i = 0; i < logs2.length; i++) {
+            if (logs2[i].topics.length > 0 && logs2[i].topics[0] == eventSig2) {
+                address eventTrader = address(uint160(uint256(logs2[i].topics[1])));
+                // decode the remaining params
+                (int128 tradePercentage2, uint64 tradeTimestamp)
+                    = abi.decode(logs2[i].data, (int128, uint64));
 
-    //     console.log("TEST Trader2 Adress: ----------------------", TRADER2);
-    //     console.log("TEST Second Trader2 profit: ----------------------", newProfit2);
+                if (eventTrader == TRADER2) {
+                    profitFromEvent2 = tradePercentage2;
+                    break;
+                }
+            }
+        }
+        assertGt(profitFromEvent, profitFromEvent2);
 
-    //     // check the updated leaderboard
-    //     DexProfitWars.LeaderboardEntry[3] memory boardUpdated = hook.getCurrentLeaderboard();
-    //     int256 updatedTrader2Profit;
-    //     for (uint8 i = 0; i < boardUpdated.length; i++) {
-    //         if (boardUpdated[i].trader == TRADER2) {
-    //             updatedTrader2Profit = boardUpdated[i].profitPercentage;
-    //         }
-    //     }
-
-    //     // leaderboard also reflects Trader2's improved profit
-    //     assertGt(updatedTrader2Profit, initialTrader2Profit);
-    // }
+        // check the updated leaderboard
+        DexProfitWars.LeaderboardEntry[3] memory boardUpdated = hook.getCurrentLeaderboard();
+        int256 updatedTrader2Profit;
+        for (uint8 i = 0; i < boardUpdated.length; i++) {
+            if (boardUpdated[i].trader == TRADER2) {
+                updatedTrader2Profit = boardUpdated[i].profitPercentage;
+            }
+        }
+        // the higher profit percent for trader 2 is reflect in the leaderboard
+        assertEq(profitFromEvent, updatedTrader2Profit);
+    }
 
     // // forge test --match-path test/DexProfitWars.t.sol --match-test test_tieBrokenByTimestamp -vvv
     // // ==================================================================

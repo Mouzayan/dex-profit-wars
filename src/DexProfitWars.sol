@@ -81,6 +81,11 @@ contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
         uint128 totalBonusPoints,
         uint64 lastTradeTimestamp
     );
+    event TraderProfited(
+        address indexed trader,
+        int128 tradePercentage,
+        uint64 tradeTimestamp
+    );
     event OracleCacheUpdated(uint64 timestamp);
 
     // ===================== Structures =====================
@@ -330,6 +335,8 @@ contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
         TraderStats storage stats = traderStats[trader];
         stats.totalTrades = uint128(stats.totalTrades + 1);
         if (profitPercentage > 0) {
+            emit TraderProfited(trader, int128(profitPercentage), uint64(block.timestamp));
+
             stats.profitableTrades = uint128(stats.profitableTrades + 1);
             if (profitPercentage > stats.bestTradePercentage) {
                 stats.bestTradePercentage = int128(profitPercentage);
