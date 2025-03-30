@@ -45,7 +45,6 @@ contract DexProfitWarsTest is Test, Deployers {
     address TRADER1 = makeAddr("TRADER1");
     address TRADER2 = makeAddr("TRADER2");
     address TRADER3 = makeAddr("TRADER3");
-    address TRADER4 = makeAddr("TRADER4");
 
     uint256 constant ONE = 1e18;
     uint256 constant INITIAL_LIQUIDITY = 500e18;
@@ -529,27 +528,36 @@ contract DexProfitWarsTest is Test, Deployers {
         assertEq(board[1].trader, TRADER1);
     }
 
-    // // forge test --match-path test/DexProfitWars.t.sol --match-test test_tieBrokenByTradeVolume -vvv
-    // // ==================================================================
-    // // 4) Two traders get the exact same profit percentage and same timestamp;
-    // //    the tie is broken based on bigger trade volume.
-    // // ==================================================================
-    // function test_tieBrokenByTradeVolume() public {
-    //     // Use different trade volumes but same profit percentage.
-    //     uint256 tokensSpent_T1 = 100e6;
-    //     uint256 tokensSpent_T2 = 150e6; // larger volume for TRADER2
-    //     uint256 tokensGained_T1 = (tokensSpent_T1 * (10000 + 300)) / (2 * 10000);
-    //     uint256 tokensGained_T2 = (tokensSpent_T2 * (10000 + 300)) / (2 * 10000);
+    // Two traders get the exact same profit percentage and same timestamp;
+    // the tie is broken based on bigger trade volume
+    function test_tieBrokenByTradeVolume() public {
+        vm.warp(1000);
 
-    //     // Ensure both trades occur at the same timestamp.
-    //     uint256 t = block.timestamp + 10;
-    //     vm.warp(t);
-    //     testSimulateTrade(TRADER1, tokensSpent_T1, tokensGained_T1, true);
-    //     testSimulateTrade(TRADER2, tokensSpent_T2, tokensGained_T2, true);
+        ethUsdOracle.updateAnswer(2000e8);
+        token0Oracle.updateAnswer(1e8);
+        token1Oracle.updateAnswer(2e8);
+        gasPriceOracle.updateAnswer(15e8);
 
-    //     // Now, with equal profit percentage and timestamp, TRADER2 should win due to bigger volume.
-    //     DexProfitWars.LeaderboardEntry[3] memory board = hook.getCurrentLeaderboard();
-    //     assertEq(board[0].trader, TRADER2, "TRADER2 should rank first (bigger volume)");
-    //     assertEq(board[1].trader, TRADER1, "TRADER1 should rank second");
-    // }
+        hook.startContest();
+
+        uint256 tokensSpent_T1 = 3e13;
+        uint256 tokensSpent_T2 = 50e14; // TRADER2 does bigger volume
+
+        // both trades happen at the same timestamp
+        vm.warp(block.timestamp + 10);
+
+        testSwap(TRADER1, tokensSpent_T1, 15);
+        testSwap(TRADER2, tokensSpent_T2, 0);
+
+        DexProfitWars.LeaderboardEntry[3] memory board = hook.getCurrentLeaderboard();
+
+        (, , int256 profit1, , ) = hook.getTraderStats(TRADER1);
+        (, , int256 profit2, , ) = hook.getTraderStats(TRADER2);
+        assertEq(profit1, profit2);
+
+        // both trades have the same timestamp and same profit percentage,
+        // the tiebreaker is bigger volume so TRADER2 ranks first
+        assertEq(board[0].trader, TRADER2);
+        assertEq(board[1].trader, TRADER1);
+    }
 }
