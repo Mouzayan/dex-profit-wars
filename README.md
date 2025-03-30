@@ -88,4 +88,4 @@ This project is licensed under the **UNLICENSED** License.
 ## Acknowledgements
 
 - Built using the Foundry toolkit for Ethereum development.
-- Inspired by the opportunity to drive liquidity spikes and fee revenue by transforming routine decentralized trading into community-driven contests :heart:
+- Inspired by the opportunity to drive liquidity spikes and fee revenue through transforming routine decentralized trading into community-driven contests :heart:
