@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
+
 pragma solidity 0.8.26;
 
-import {console} from "forge-std/Test.sol"; // REMOVE
 import {AggregatorV3Interface} from "chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
 import {Ownable} from "v4-periphery/lib/permit2/lib/openzeppelin-contracts/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "v4-periphery/lib/permit2/lib/solmate/src/utils/ReentrancyGuard.sol";
@@ -17,6 +17,7 @@ import {Hooks} from "v4-core/libraries/Hooks.sol";
 /**
  * @title DexProfitWars
  * @author em_mutable
+ *
  * @notice DexProfitWars is a Uniswap V4 hook that gamifies trading by running periodic contests
  *         where traders compete based on their trade profits calculated in USD. Converting trade
  *         values to USD using on-chain oracle price feeds (for ETH, token0, token1, and gas prices)
@@ -104,7 +105,7 @@ contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
         LeaderboardEntry[3] entries;
     }
 
-    // =================== State Variables ==================
+    // ==================== Global State ====================
     mapping(uint256 => Leaderboard) private pastContestLeaderboards;
     mapping(address => uint256) public snapshotGas;
     mapping(address => TraderStats) public traderStats;
@@ -354,43 +355,7 @@ contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
         return (BaseHook.afterSwap.selector, 0);
     }
 
-    // ======================================== MUTATIVE FUNCTIONS ========================================
-    /**
-     * @notice Initiates a new 2-day contest.
-     *
-     * @dev Increments the contest identifier, resets the current leaderboard, sets the contest end time
-     *      to the current block timestamp plus the contest duration, and forces an immediate update of the
-     *      oracle cache to ensure fresh price data.
-     */
-    function startContest() external onlyOwner nonReentrant {
-        if (contestActive) revert ContestAlreadyActive();
-
-        currentContestId++;
-        contestActive = true;
-        contestEndTime = uint64(block.timestamp + CONTEST_DURATION);
-
-        delete currentLeaderboard;
-        // force an immediate oracle update
-        lastOracleCacheUpdate = 0;
-
-        _updateOracleCache();
-        emit ContestStarted(currentContestId, contestEndTime);
-    }
-
-    /**
-     * @notice Ends the active contest.
-     *
-     * @dev This function manually terminates the current contest by archiving the active leaderboard
-     *      into pastContestLeaderboards and marking the contest as inactive.
-     */
-    function endContest() external onlyOwner nonReentrant {
-        if (!contestActive) revert NoActiveContest();
-
-        _archiveCurrentContest();
-        emit ContestEnded(currentContestId);
-    }
-
-    // ========================================= GETTER FUNCTIONS =======================================
+    // ========================================== VIEW FUNCTIONS ========================================
     /**
      * @notice Retrieves the trading statistics for a specific trader.
      *
@@ -451,6 +416,42 @@ contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
      */
     function getPastContestLeaderboard(uint256 contestId) external view returns (LeaderboardEntry[3] memory) {
         return pastContestLeaderboards[contestId].entries;
+    }
+
+    // ======================================= RESTRICTED FUNCTIONS =======================================
+    /**
+     * @notice Initiates a new 2-day contest.
+     *
+     * @dev Increments the contest identifier, resets the current leaderboard, sets the contest end time
+     *      to the current block timestamp plus the contest duration, and forces an immediate update of the
+     *      oracle cache to ensure fresh price data.
+     */
+    function startContest() external onlyOwner nonReentrant {
+        if (contestActive) revert ContestAlreadyActive();
+
+        currentContestId++;
+        contestActive = true;
+        contestEndTime = uint64(block.timestamp + CONTEST_DURATION);
+
+        delete currentLeaderboard;
+        // force an immediate oracle update
+        lastOracleCacheUpdate = 0;
+
+        _updateOracleCache();
+        emit ContestStarted(currentContestId, contestEndTime);
+    }
+
+    /**
+     * @notice Ends the active contest.
+     *
+     * @dev This function manually terminates the current contest by archiving the active leaderboard
+     *      into pastContestLeaderboards and marking the contest as inactive.
+     */
+    function endContest() external onlyOwner nonReentrant {
+        if (!contestActive) revert NoActiveContest();
+
+        _archiveCurrentContest();
+        emit ContestEnded(currentContestId);
     }
 
     // ========================================= HELPER FUNCTIONS ========================================
