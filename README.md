@@ -1,6 +1,8 @@
 # DexProfitWars
 
-DexProfitWars is a smart contract designed as a Uniswap V4 hook that gamifies trading contests by tracking trader performance using USD-based profit calculations. The contract converts trade values using on-chain oracle price feeds (for ETH, token0, token1, and gas prices) to ensure fair, cross-token comparisons. It maintains a gas-efficient leaderboard of the top three trades in each 2‑day contest, laying the groundwork for future reward distribution and advanced applications.
+DexProfitWars is a Uniswap V4 hook that turns trading into a competitive leaderboard for top profit-makers. It unlocks monetization opportunities by enabling fee-based copy trading, drives trading spikes, and generates airdrop buzz through sponsor-funded rewards for leading traders.
+
+The hook tracks trader performance using USD-based profit calculations. It converts trade values using on-chain oracle price feeds for ETH, token0, token1, and gas prices to ensure fair, cross-token comparisons. It maintains a gas-efficient leaderboard of the top three traderds in 2‑day contests, laying the groundwork for future reward distribution and advanced applications.
 
 ## Features
 
