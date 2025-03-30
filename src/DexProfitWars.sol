@@ -148,15 +148,19 @@ contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
     uint64 private lastOracleCacheUpdate;
 
     // ========================================== CONSTRUCTOR ===========================================
-    // /** FOX NATSPEC
-    //  * @notice Sets up the DexProfitWars contract by initializing the pool manager and price oracles,
-    //  *         and storing their decimal precision values.
-    //  *
-    //  * @param _manager                      The Uniswap V4 pool manager contract address.
-    //  * @param _ethUsdOracle                 The address of the ETH/USD Chainlink price feed.
-    //  * @param _token0UsdOracle              The address of the Token0/USD Chainlink price feed.
-    //  * @param _token1UsdOracle              The address of the Token1/USD Chainlink price feed.
-    //  */
+    /**
+     * @notice Initializes the DexProfitWars contract.
+     *
+     * @dev Sets up the contract by storing the pool manager address and initializing the Chainlink
+     *      oracles for gas price, token0, token1, and ETH/USD. It also retrieves and stores each
+     *      oracle's decimal precision for accurate price scaling in subsequent profit calculations.
+     *
+     * @param _manager                      The address of the Uniswap V4 pool manager contract.
+    * @param _gasPriceOracle                The address of the gas price Chainlink oracle.
+    * @param _token0PriceOracle             The address of the Token0/USD Chainlink price feed.
+    * @param _token1PriceOracle             The address of the Token1/USD Chainlink price feed.
+    * @param _ethUsdOracle                  The address of the ETH/USD Chainlink price feed.
+     */
     constructor(
         IPoolManager _manager,
         address _gasPriceOracle,
@@ -187,7 +191,8 @@ contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
      *         This hook requires permissions for beforeSwap, afterSwap, and afterAddLiquidity
      *         to track trades and manage profit calculations.
      *
-     * @return Hooks.Permissions struct indicating which hook functions are active
+     * @return                               Hooks.Permissions struct indicating which hook functions
+     *                                       are active.
      */
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
@@ -209,18 +214,21 @@ contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
     }
 
     // =========================================== HOOK CALLBACKS ==========================================
-    // TODO: MOVE TO INTERNAL FUNCTIONS
-    /** _beforeSwap records the trader’s pre-swap gas balance. FIX NATSPEc
-     * @notice Before-swap hook: record the price and gas usage so we can do PnL calculations later.
-     * In _beforeSwap, we record the trader's initial token balances and the gas left.
-     */
     /**
-     * @notice Records the initial state before a swap occurs, including gas usage and price.
-     *         This data is used to calculate profit/loss and gas costs in afterSwap.
+     * @notice Executes the pre-swap hook logic.
+     *
+     * @dev This function is called by the pool manager before a swap is executed. It decodes the
+     *      provided hookData to extract the trader’s address and then records the trader’s current gas
+     *      balance. This snapshot is later used to calculate the gas consumed during the swap for
+     *      profit/loss computations. It returns the beforeSwap function selector, a balance delta
+     *      and the pool fee from the key.
      *
      * @param key                           The pool key containing token pair and fee information.
+     * @param hookData                      Encoded data containing the trader's address.
      *
-     * @return                              The function selector to indicate successful hook execution.
+     * @return selector                     The function selector for the beforeSwap hook.
+     * @return delta                        A balance delta.
+     * @return fee                          The fee value extracted from the pool key.
      */
     function _beforeSwap(
         address,
@@ -235,24 +243,25 @@ contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, key.fee);
     }
 
-    // TODO: MOVE TO INTERNAL FUNCTIONS
-    /** Compute PnL using the swapDelta and gas cost from the Chainlink oracle.
-     * // Compute the net profit percentage in USD terms.
-     * @notice After-swap hook: do PnL logic and update user stats. No token settlement here anymore.
-     * In _afterSwap, we compute how much the trader's balances changed.
-
-     * @notice Calculates the profit/loss after a swap completes, including gas costs,
-     *         and updates trader statistics if profit threshold is met.
-     *         The _afterSwap hook is called by the PoolManager after a swap completes.
-     *         It instructs the PoolManager to transfer the output tokens to this hook contract.
+    /**
+     * @notice Executes the post-swap hook logic.
      *
-     * @dev This function is only callable by the PoolManager.
+     * @dev This function is called by the pool manager immediately after a swap completes.
+     *      It first checks if the active contest has expired and, if so, archives the current contest.
+     *      Then, it decodes the hook data to determine the trader’s address and calculates the gas used
+     *      during the swap using a previously stored gas snapshot. The function refreshes the cached oracle
+     *      prices, converts the traded token amounts into USD, and computes the net profit or loss in basis
+     *      points after subtracting gas costs. Trader statistics are updated accordingly—only profitable
+     *      trades that exceed a 2% profit threshold are eligible to update the leaderboard. Ties are resolved
+     *      first by the trade timestamp and then by trade volume.
      *
-     * @param params                        The swap parameters including amount and direction.
-     * @param delta                         The balance changes resulting from the swap.
-     * @param hookData                      /////// TODO: ADD this
+     * @param params                        The swap parameters, including direction and exact input amount.
+     * @param delta                         The balance delta representing the amounts of tokens exchanged during
+     *                                      the swap.
+     * @param hookData                      Encoded data containing the trader's address.
      *
-     * @return                              The function selector to indicate successful hook execution.
+     * @return selector                     The function selector for the afterSwap hook.
+     * @return returnDelta                  A token settlement delta.
      */
     function _afterSwap(
         address,
@@ -294,8 +303,6 @@ contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
             tokensSpent = amt1 < 0 ? uint256(uint128(-amt1)) : 0;
             tokensGained = amt0 > 0 ? uint256(uint128(amt0)) : 0;
         }
-        console.log("CONTRACT tokensSpent: -------------", tokensSpent);
-console.log("CONTRACT token0PriceUSD: ------------------", token0PriceUSD);
 
         // convert token amounts to USD values assuming 18 decimals
         uint256 valueInUSD;
@@ -307,7 +314,7 @@ console.log("CONTRACT token0PriceUSD: ------------------", token0PriceUSD);
             valueInUSD = (tokensSpent * token1PriceUSD) / ONE;
             valueOutUSD = (tokensGained * token0PriceUSD) / ONE;
         }
-console.log("CONTRACT valueInUSD: --------------", valueInUSD);
+
         // calculate profit percentage in basis points
         int256 profitPercentage;
         if (valueInUSD == 0) {
@@ -317,7 +324,6 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
         } else {
             profitPercentage = -int256((((valueInUSD + gasCostUSD) - valueOutUSD) * BPS_MULTIPLIER) / valueInUSD);
         }
-        console.log("HOOK: profitPercentage (bps):", profitPercentage);
 
         // update trader stats
         TraderStats storage stats = traderStats[trader];
@@ -349,12 +355,12 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
     }
 
     // ======================================== MUTATIVE FUNCTIONS ========================================
-    /** TODO: FIX NATSPEC
-     * @notice Starts a new 2-day contest.
-     *         Resets the current leaderboard, increments the contestId,
-     *         sets the contest end time, and forces an immediate oracle update.
+    /**
+     * @notice Initiates a new 2-day contest.
      *
-     * @dev Only the owner can start a contest.
+     * @dev Increments the contest identifier, resets the current leaderboard, sets the contest end time
+     *      to the current block timestamp plus the contest duration, and forces an immediate update of the
+     *      oracle cache to ensure fresh price data.
      */
     function startContest() external onlyOwner nonReentrant {
         if (contestActive) revert ContestAlreadyActive();
@@ -371,11 +377,11 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
         emit ContestStarted(currentContestId, contestEndTime);
     }
 
-    /** TODO: FIX NATSPEC
-     * @notice Ends the current contest manually.
-     *         Archives the current leaderboard into pastContestLeaderboards.
+    /**
+     * @notice Ends the active contest.
      *
-     * @dev Only the owner can end a contest.
+     * @dev This function manually terminates the current contest by archiving the active leaderboard
+     *      into pastContestLeaderboards and marking the contest as inactive.
      */
     function endContest() external onlyOwner nonReentrant {
         if (!contestActive) revert NoActiveContest();
@@ -385,41 +391,89 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
     }
 
     // ========================================= GETTER FUNCTIONS =======================================
-    // ADD NATSPEC
+    /**
+     * @notice Retrieves the trading statistics for a specific trader.
+     *
+     * @dev Returns a tuple containing the total number of trades, the number of profitable trades,
+     *      the best / highest trade profit percentage in basis points, the total bonus points earned,
+     *      and the timestamp of the trader's last trade.
+     *
+     * @param trader                        The address of the trader.
+     *
+     * @return totalTrades                  The total number of trades executed by the trader.
+     * @return profitableTrades             The number of trades that were profitable.
+     * @return bestTradePercentage          The highest profit percentage (in basis points) achieved by the trader.
+     * @return totalBonusPoints             The total bonus points accumulated by the trader.
+     * @return lastTradeTimestamp           The timestamp of the trader's most recent trade.
+     */
     function getTraderStats(address trader) public view returns (uint256, uint256, int256, uint256, uint256) {
         TraderStats memory stats = traderStats[trader];
+
         return (stats.totalTrades, stats.profitableTrades, stats.bestTradePercentage, stats.totalBonusPoints, stats.lastTradeTimestamp);
     }
 
-    /** TODO: FIX NATSPEC
-     * @notice Returns the leaderboard for a given contest by contestId
+    /**
+     * @notice Retrieves the leaderboard for a specific contest.
+     *
+     * @dev Returns the fixed-size array of three leaderboard entries for the contest identified
+     *      by contestId.
+     *
+     * @param contestId                     The identifier of the contest.
+     *
+     * @return                              An array of three LeaderboardEntry structs representing
+     *                                      the leaderboard for the contest.
      */
     function getContestLeaderboard(uint256 contestId) external view returns (LeaderboardEntry[3] memory) {
         return pastContestLeaderboards[contestId].entries;
     }
 
-    /** TODO: FIX NATSPEC
-     * @notice Returns the current contest's leaderboard even if the contest is over.
+    /**
+     * @notice Retrieves the current contest's leaderboard.
+     *
+     * @dev Returns the leaderboard entries for the ongoing or most recently ended contest.
+     *
+     * @return                              An array of three LeaderboardEntry structs representing
+     *                                      the current contest's leaderboard winners.
      */
     function getCurrentLeaderboard() external view returns (LeaderboardEntry[3] memory) {
         return currentLeaderboard.entries;
     }
 
-    // TODO: FIX NATSPEC
+    /**
+     * @notice Retrieves the archived leaderboard for a past contest.
+     *
+     * @dev Returns the leaderboard entries for the contest identified by contestId from the archive.
+     *
+     * @param contestId                     The identifier of the past contest.
+     *
+     * @return                              An array of three LeaderboardEntry structs representing
+     *                                      the archived leaderboard.
+     */
     function getPastContestLeaderboard(uint256 contestId) external view returns (LeaderboardEntry[3] memory) {
         return pastContestLeaderboards[contestId].entries;
     }
 
     // ========================================= HELPER FUNCTIONS ========================================
-    // TODO: FIX NATSPEC
-    // Internal function to archive the current contest and mark contest as inactive.
+    /**
+     * @notice Archives the current contest leaderboard and deactivates the contest.
+     *
+     * @dev This internal function stores the current leaderboard in the pastContestLeaderboards mapping
+     *      using the currentContestId as the key, and then sets the contestActive flag to false.
+     */
     function _archiveCurrentContest() internal {
         pastContestLeaderboards[currentContestId] = currentLeaderboard;
         contestActive = false;
     }
 
-    // TODO: NATSPEC
-    // updates the oracle cache if the cache interval has passed
+    /**
+     * @notice Refreshes and caches oracle price data if the cache interval has elapsed.
+     *
+     * @dev Checks whether the time elapsed since the last update exceeds ORACLE_CACHE_INTERVAL.
+     *      If so, it fetches the latest data from the gas price, ETH, token0, and token1 Chainlink
+     *      oracles. For each oracle, it verifies that the returned answer is positive and not stale.
+     *      It then scales the prices to 18 decimals, caches them, and updates the lastOracleCacheUpdate
+     *      timestamp.
+     */
     function _updateOracleCache() internal {
         uint256 currentTime = block.timestamp;
         if (currentTime - lastOracleCacheUpdate >= ORACLE_CACHE_INTERVAL) {
@@ -456,10 +510,21 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
         }
     }
 
-    // TODO: NATSPEC
-    // _updateLeaderboard updates the leaderboard for the current trading contest window
-    // if the trader already has an entry, it updates it only if the new trade is better
-    // otherwise, it inserts the new entry if there is space or if it beats the worst entry
+    /**
+     * @notice Updates the current contest leaderboard with a new trade record for a trader.
+     *
+     * @dev The function checks if the trader already exists in the current leaderboard. If so, it
+     *      updates the trader’s entry only if the new trade's profit percentage is better. If the
+     *      trader is not already on the leaderboard, it inserts the new record into an empty slot
+     *      if available; otherwise, it replaces the worst performing entry if the new trade
+     *      outperforms it. Finally, the leaderboard is re-sorted in descending order.
+     *      This mechanism ensures that the leaderboard always reflects the trader’s best trade.
+     *
+     * @param trader                        The address of the trader whose trade is being recorded.
+     * @param profitPercentage              The profit percentage in basis points of the trade.
+     * @param tradeVolumeUSD                The USD value of the trade scaled to 18 decimals.
+     * @param timestamp                     The block timestamp at which the trade occurred.
+     */
     function _updateLeaderboard(
         address trader,
         int256 profitPercentage,
@@ -539,13 +604,22 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
         }
     }
 
-    // TODO: NATSPEC
-    // _isBetter compares a new trade (profit, timestamp, volume) against an existing leaderboard entry
-    // It returns true if the new trade is better.
-    // Comparison order:
-    // 1. higher profit percentage wins
-    // 2. if equal, the earlier timestamp wins
-    // 3. if still equal, the higher trade volume wins
+    /**
+     * @notice Compares a new trade against an existing leaderboard entry.
+     *
+     * @dev Determines if a new trade is better than an existing leaderboard entry based on
+     *      a prioritized comparison: first by higher profit percentage, then by an earlier timestamp,
+     *      and finally by a higher trade volume in USD. If the existing entry has a zero address for
+     *      the trader i.e. an empty slot, the new trade is automatically considered better.
+     *
+     * @param profitA                       The profit percentage in basis points of the new trade.
+     * @param timestampA                    The timestamp of the new trade.
+     * @param volumeA                       The trade volume in USD scaled to 18 decimals of the new trade.
+     * @param entryB                        The existing leaderboard entry to compare against.
+     *
+     * @return                              True if the new trade is better than the existing entry,
+     *                                      false otherwise.
+     */
     function _isBetter(
         int256 profitA,
         uint256 timestampA,
@@ -572,10 +646,19 @@ console.log("CONTRACT valueInUSD: --------------", valueInUSD);
         return false;
     }
 
-    /** TODO: NATSPEC
-     * @dev Scales a price from `priceDecimals` to `targetDecimals`.
-     * unction is designed to adjust a price value from one fixed-point precision (number of decimals) to another
-     * This ensures that all price values are standardized to the same number of decimals (in this case, 18)
+    /**
+     * @notice Scales a price value from its original fixed-point precision to a target precision.
+     *
+     * @dev If the original number of decimals (priceDecimals) is less than the targetDecimals,
+     *      the price is multiplied by 10^(targetDecimals - priceDecimals). If it is greater,
+     *      the price is divided by 10^(priceDecimals - targetDecimals). If both are equal,
+     *      the original price is returned unchanged.
+     *
+     * @param price                         The original price value.
+     * @param priceDecimals                 The number of decimals in the original price.
+     * @param targetDecimals                The desired number of decimals.
+     *
+     * @return                              The price scaled to the target decimal precision.
      */
     function _scalePrice(
         uint256 price,
