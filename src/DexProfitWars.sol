@@ -93,7 +93,7 @@ contract DexProfitWars is BaseHook, Ownable, ReentrancyGuard {
         uint128 totalTrades;
         uint128 profitableTrades;
         int128 bestTradePercentage; // personal best in basis points
-        uint128 totalBonusPoints;
+        uint128 totalBonusPoints; // BONUS POINT COLLECTION NOT IMPLEMENTED YET
         uint64 lastTradeTimestamp;
     }
 
