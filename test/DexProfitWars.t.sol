@@ -347,7 +347,7 @@ contract DexProfitWarsTest is Test, Deployers {
     }
 
     // Three traders with profitable trades get onto the leaderboard,
-    // in the right order based on profit percentages.
+    // in the right order based on profit percentages
     function test_leaderboardThreeTradersProfit() public {
         // warp to nonzero time so the aggregator’s updatedAt is not 0
         vm.warp(1000);
@@ -417,7 +417,7 @@ contract DexProfitWarsTest is Test, Deployers {
 
     // Three traders are on the leaderboard and one trades twice, only higher
     // profit percentage is reflected on the leaderboard
-    function test_updatesLBProfitIfBetter() public {
+    function test_leaderboardUpdatesOnBetterTrade() public {
         vm.warp(1000);
 
         ethUsdOracle.updateAnswer(2000e8);
@@ -489,29 +489,45 @@ contract DexProfitWarsTest is Test, Deployers {
         assertEq(profitFromEvent, updatedTrader2Profit);
     }
 
-    // // forge test --match-path test/DexProfitWars.t.sol --match-test test_tieBrokenByTimestamp -vvv
-    // // ==================================================================
-    // // 3) Two traders get the exact same profit percentage,
-    // //    and the tie is broken based on who traded earlier.
-    // // ==================================================================
-    // function test_tieBrokenByTimestamp() public {
-    //     uint256 tokensSpent = 100e6;
-    //     uint256 tokensGained = (tokensSpent * (10000 + 300)) / (2 * 10000); // 300 bps profit
+    // Two traders get the exact same profit percentage,
+    // and the tie is broken based on who traded earlier
+    function test_tieBrokenByTimestamp() public {
+        vm.warp(1000);
 
-    //     // Simulate TRADER1 trading first.
-    //     vm.warp(block.timestamp + 10); // set time to t + 10
-    //     testSimulateTrade(TRADER1, tokensSpent, tokensGained, true);
+        ethUsdOracle.updateAnswer(2000e8);
+        token0Oracle.updateAnswer(1e8);
+        token1Oracle.updateAnswer(2e8);
+        gasPriceOracle.updateAnswer(15e8);
 
-    //     // Simulate TRADER2 trading later.
-    //     vm.warp(block.timestamp + 20); // now time increased further
-    //     testSimulateTrade(TRADER2, tokensSpent, tokensGained, true);
+        hook.startContest();
 
-    //     // Retrieve leaderboard; both trades have 300 bps profit.
-    //     // Tie-breaker should put the earlier trade (TRADER1) ahead.
-    //     DexProfitWars.LeaderboardEntry[3] memory board = hook.getCurrentLeaderboard();
-    //     assertEq(board[0].trader, TRADER1, "TRADER1 should rank above TRADER2 (earlier timestamp)");
-    //     assertEq(board[1].trader, TRADER2, "TRADER2 should rank second");
-    // }
+        // set the swap tick
+        int24 tickOffset = 10;
+
+        // base timestamp
+        uint256 t0 = block.timestamp;
+
+        // TRADER3 swaps at t0 + 10
+        vm.warp(t0 + 10);
+        testSwap(TRADER3, 1e14, tickOffset);
+
+        // TRADER1 swaps at t0 + 20
+        vm.warp(t0 + 20);
+        testSwap(TRADER1, 1e16, tickOffset);
+
+        // retrieve the leaderboard
+        DexProfitWars.LeaderboardEntry[3] memory board = hook.getCurrentLeaderboard();
+
+        // both trades have the same profit percentage
+        (, , int256 profit1, ,) = hook.getTraderStats(TRADER1);
+        (, , int256 profit3, ,) = hook.getTraderStats(TRADER3);
+        assertEq(profit3, profit1);
+
+        // the tie-breaker is the earlier timestamp,
+        // favors TRADER3
+        assertEq(board[0].trader, TRADER3);
+        assertEq(board[1].trader, TRADER1);
+    }
 
     // // forge test --match-path test/DexProfitWars.t.sol --match-test test_tieBrokenByTradeVolume -vvv
     // // ==================================================================
