@@ -166,7 +166,7 @@ contract DexProfitWarsTest is Test, Deployers {
         vm.txGasPrice(GAS_PRICE);
     }
 
-    function test_swapAtLoss() public {
+    function test_swapPnL_Loss() public {
         vm.warp(block.timestamp + 120);
         hook.startContest();
 
@@ -222,7 +222,7 @@ contract DexProfitWarsTest is Test, Deployers {
         vm.stopPrank();
     }
 
-    function test_swapAtProfit() public {
+    function test_swapPnL_Profit() public {
         vm.warp(block.timestamp + 120);
         hook.startContest();
 
