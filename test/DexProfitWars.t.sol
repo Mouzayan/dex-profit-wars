@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: UNLICENSED
 
 pragma solidity 0.8.26;
-// TODO: CHECK IF SOME IMPORTS ARE NOT NEEDED !!!
 
 import {Test, console} from "forge-std/Test.sol";
 
@@ -9,28 +8,23 @@ import {Deployers} from "@uniswap/v4-core/test/utils/Deployers.sol";
 import {PoolSwapTest} from "v4-core/test/PoolSwapTest.sol";
 import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
 
-import {PoolManager} from "v4-core/PoolManager.sol";
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 
 import {Currency, CurrencyLibrary} from "v4-core/types/Currency.sol";
-import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
+import {PoolIdLibrary} from "v4-core/types/PoolId.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
-import {BalanceDelta, toBalanceDelta} from "v4-core/types/BalanceDelta.sol";
+import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 
 import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {TickMath} from "v4-core/libraries/TickMath.sol";
-import {SqrtPriceMath} from "v4-core/libraries/SqrtPriceMath.sol";
 import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
-import {LiquidityAmounts} from "@uniswap/v4-core/test/utils/LiquidityAmounts.sol";
 
 import {MockV3Aggregator} from "./mocks/MockV3Aggregator.sol";
 import {DexProfitWars} from "../src/DexProfitWars.sol";
 
-// TODO: REMOVE CONSOLE.LOGS !!!!
-
 contract DexProfitWarsTest is Test, Deployers {
-    using StateLibrary for IPoolManager; // ???? NEEDED??
-    using PoolIdLibrary for PoolKey; // ???? NEEDED??
+    using StateLibrary for IPoolManager;
+    using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
 
     DexProfitWars public hook;
@@ -53,15 +47,9 @@ contract DexProfitWarsTest is Test, Deployers {
     address TRADER3 = makeAddr("TRADER3");
     address TRADER4 = makeAddr("TRADER4");
 
-    int256 constant SEND_VALUE_LARGE = 100e18;
-    int256 constant SEND_VALUE_SMALL = 1e16;
     uint256 constant ONE = 1e18;
-    uint256 constant FOUR = 4e18;
     uint256 constant INITIAL_LIQUIDITY = 500e18;
-    uint256 constant SCALING_FACTOR = 1e9; // Needed ???
-    uint256 constant MINIMUM_PROFIT_BPS = 200; // 2% minimum profit
     bool constant ZERO_FOR_ONE = true; // user trading token0 for token1
-
     // set GAS_PRICE in wei (15 gwei = 15e9 wei)
     uint256 constant GAS_PRICE = 15e9;
 
